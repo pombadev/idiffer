@@ -1,0 +1,16 @@
+[package]
+name = "idiffer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# GUI Framework
+eframe = "0.33"       # Or the latest version
+egui-shadcn = "0.5.0"
+
+# Image Processing
+image = "0.24"           # Essential for loading images
+lucide-icons = "0.575.0"
+
+# Native File Dialogs (Linux/macOS support)
+rfd = "0.14" # Makes loading files easy
