@@ -3,7 +3,7 @@
 use eframe::egui;
 use eframe::epaint::{ColorImage, TextureHandle};
 use egui::{FontData, FontDefinitions, FontFamily, FontId, RichText};
-use egui_shadcn::{button, separator, ControlSize, ControlVariant, Label, SeparatorProps, Theme};
+use egui_shadcn::{ControlSize, ControlVariant, Label, SeparatorProps, Theme, button, separator};
 use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -52,12 +52,28 @@ fn icon_text(icon: Icon, size: f32) -> RichText {
         .font(FontId::new(size, FontFamily::Name("lucide".into())))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DiffMode {
+    Slider,
+    SideBySide,
+    Difference,
+    Fade,
+}
+
 struct ImageDifferApp {
     texture_left: Option<TextureHandle>,
     texture_right: Option<TextureHandle>,
+    texture_diff: Option<TextureHandle>,
+
+    // We store the raw image data for diffing
+    image_left: Option<image::RgbaImage>,
+    image_right: Option<image::RgbaImage>,
+
     path_left: Option<PathBuf>,
     path_right: Option<PathBuf>,
     slider_pos: f32,
+    fade_opacity: f32,
+    diff_mode: DiffMode,
     error_msg: Option<String>,
     theme: Theme,
 
@@ -71,9 +87,14 @@ impl ImageDifferApp {
         Self {
             texture_left: None,
             texture_right: None,
+            texture_diff: None,
+            image_left: None,
+            image_right: None,
             path_left: None,
             path_right: None,
             slider_pos: 0.5,
+            fade_opacity: 0.5,
+            diff_mode: DiffMode::Slider,
             error_msg: None,
             theme: Theme::default(),
             commits_left: Vec::new(),
@@ -86,8 +107,8 @@ impl ImageDifferApp {
             .arg("log")
             .arg("--pretty=format:%h|%s|%cd")
             .arg("--date=short")
-            .arg("-n")
-            .arg("10")
+            // .arg("-n")
+            // .arg("10")
             .arg("--")
             .arg(path)
             .output();
@@ -153,13 +174,16 @@ impl ImageDifferApp {
 
                         if is_left {
                             self.texture_left = Some(handle);
+                            self.image_left = Some(image_buffer);
                             self.path_left = Some(path.to_path_buf());
                             self.commits_left.clear();
                         } else {
                             self.texture_right = Some(handle);
+                            self.image_right = Some(image_buffer);
                             self.path_right = Some(path.to_path_buf());
                             self.commits_right.clear();
                         }
+                        self.texture_diff = None; // Force clear diff
                         self.error_msg = None;
                     }
                     Err(e) => {
@@ -211,18 +235,60 @@ impl ImageDifferApp {
 
                 if is_left {
                     self.texture_left = Some(handle);
+                    self.image_left = Some(image_buffer);
                     self.path_left = Some(path);
                     self.commits_left.clear();
                 } else {
                     self.texture_right = Some(handle);
+                    self.image_right = Some(image_buffer);
                     self.path_right = Some(path);
                     self.commits_right.clear();
                 }
+                self.texture_diff = None; // Force clear diff
                 self.error_msg = None;
             }
             Err(e) => {
                 self.error_msg = Some(format!("Failed to load {}: {}", path.display(), e));
             }
+        }
+    }
+
+    fn generate_diff_texture(&mut self, ctx: &egui::Context) {
+        if self.texture_diff.is_some() {
+            return;
+        }
+
+        if let (Some(img_left), Some(img_right)) = (&self.image_left, &self.image_right) {
+            let width = img_left.width().min(img_right.width());
+            let height = img_left.height().min(img_right.height());
+
+            let mut diff_img = image::RgbaImage::new(width, height);
+
+            for y in 0..height {
+                for x in 0..width {
+                    let p1 = img_left.get_pixel(x, y);
+                    let p2 = img_right.get_pixel(x, y);
+
+                    if p1 != p2 {
+                        // Magenta for diff (Diffchecker style)
+                        diff_img.put_pixel(x, y, image::Rgba([255, 0, 255, 255]));
+                    } else {
+                        // Dimm grayscale for base
+                        let gray = (p1[0] as u32 + p1[1] as u32 + p1[2] as u32) / 8; // Very dim
+                        diff_img.put_pixel(
+                            x,
+                            y,
+                            image::Rgba([gray as u8, gray as u8, gray as u8, 255]),
+                        );
+                    }
+                }
+            }
+
+            let size = [width as usize, height as usize];
+            let pixels = diff_img.as_flat_samples();
+            let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+            self.texture_diff =
+                Some(ctx.load_texture("pixel_diff", color_image, Default::default()));
         }
     }
 }
@@ -310,7 +376,7 @@ impl eframe::App for ImageDifferApp {
                                             .clicked()
                                         {
                                             self.load_from_git(ctx, &path, &commit.hash, false);
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     }
                                 }
@@ -392,7 +458,7 @@ impl eframe::App for ImageDifferApp {
                                             .clicked()
                                         {
                                             self.load_from_git(ctx, &path, &commit.hash, true);
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     }
                                 }
@@ -453,79 +519,204 @@ impl eframe::App for ImageDifferApp {
             }
         });
 
+        egui::TopBottomPanel::top("mode_toolbar").show(ctx, |ui| {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+
+                // Mode Selectors (Diffchecker style)
+                let modes = [
+                    (DiffMode::Slider, Icon::Split, "Slider"),
+                    (DiffMode::SideBySide, Icon::Columns2, "Side by Side"),
+                    (DiffMode::Difference, Icon::Target, "Difference"),
+                    (DiffMode::Fade, Icon::Sun, "Fade"),
+                ];
+
+                for (mode, icon, label) in modes {
+                    let is_selected = self.diff_mode == mode;
+                    if button(
+                        ui,
+                        &self.theme,
+                        format!(" {} {}", icon_text(icon, 14.0).text(), label),
+                        if is_selected {
+                            ControlVariant::Primary
+                        } else {
+                            ControlVariant::Ghost
+                        },
+                        ControlSize::Sm,
+                        true,
+                    )
+                    .clicked()
+                    {
+                        self.diff_mode = mode;
+                    }
+                    ui.add_space(4.0);
+                }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(8.0);
+                    if button(
+                        ui,
+                        &self.theme,
+                        "Clear",
+                        ControlVariant::Outline,
+                        ControlSize::Sm,
+                        true,
+                    )
+                    .clicked()
+                    {
+                        self.texture_left = None;
+                        self.texture_right = None;
+                        self.texture_diff = None;
+                        self.path_left = None;
+                        self.path_right = None;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            separator(ui, &self.theme, SeparatorProps::default());
+        });
+
+        // --- Global Drag and Drop ---
+        ctx.input(|i| {
+            if !i.raw.dropped_files.is_empty() {
+                let mut iter = i.raw.dropped_files.clone().into_iter();
+                if let Some(f1) = iter.next() {
+                    if let Some(path) = f1.path {
+                        self.load_image_to_texture(ctx, path, true);
+                    }
+                }
+                if let Some(f2) = iter.next() {
+                    if let Some(path) = f2.path {
+                        self.load_image_to_texture(ctx, path, false);
+                    }
+                }
+            }
+        });
+
         egui::CentralPanel::default().show(ctx, |ui| {
             if let Some(msg) = &self.error_msg {
                 ui.colored_label(egui::Color32::RED, msg);
             }
 
             if let (Some(tex_left), Some(tex_right)) = (&self.texture_left, &self.texture_right) {
-                let available_size = ui.available_size();
-                let (rect, response) = ui.allocate_exact_size(available_size, egui::Sense::drag());
+                match self.diff_mode {
+                    DiffMode::Slider => {
+                        let available_size = ui.available_size();
+                        let (rect, response) =
+                            ui.allocate_exact_size(available_size, egui::Sense::drag());
 
-                // Draw Left Image
-                ui.painter().image(
-                    tex_left.id(),
-                    rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+                        // Draw Left Image
+                        ui.painter().image(
+                            tex_left.id(),
+                            rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
 
-                // Draw Right Image Clipped
-                let swipe_x = rect.left() + rect.width() * self.slider_pos;
-                let clipped_rect = egui::Rect::from_min_max(
-                    egui::pos2(swipe_x, rect.top()),
-                    egui::pos2(rect.right(), rect.bottom()),
-                );
-                let painter = ui.painter_at(clipped_rect);
-                painter.image(
-                    tex_right.id(),
-                    rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+                        // Draw Right Image Clipped
+                        let swipe_x = rect.left() + rect.width() * self.slider_pos;
+                        let clipped_rect = egui::Rect::from_min_max(
+                            egui::pos2(swipe_x, rect.top()),
+                            egui::pos2(rect.right(), rect.bottom()),
+                        );
+                        let painter = ui.painter_at(clipped_rect);
+                        painter.image(
+                            tex_right.id(),
+                            rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
 
-                // Draw Slider Handle
-                let line_stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
-                ui.painter().line_segment(
-                    [
-                        egui::pos2(swipe_x, rect.top()),
-                        egui::pos2(swipe_x, rect.bottom()),
-                    ],
-                    line_stroke,
-                );
+                        // Slider Grip logic... (omitted for brevity, keeping existing slider logic)
+                        let line_stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(swipe_x, rect.top()),
+                                egui::pos2(swipe_x, rect.bottom()),
+                            ],
+                            line_stroke,
+                        );
 
-                // Add Circular Grip Icon
-                let handle_radius = 18.0;
-                let center_y = rect.center().y;
-                let handle_pos = egui::pos2(swipe_x, center_y);
+                        let handle_pos = egui::pos2(swipe_x, rect.center().y);
+                        ui.painter().circle(
+                            handle_pos,
+                            18.0,
+                            egui::Color32::from_black_alpha(180),
+                            egui::Stroke::new(2.0, egui::Color32::WHITE),
+                        );
+                        ui.painter().text(
+                            handle_pos,
+                            egui::Align2::CENTER_CENTER,
+                            icon_text(Icon::ChevronsLeftRight, 16.0).text(),
+                            egui::FontId::new(16.0, FontFamily::Name("lucide".into())),
+                            egui::Color32::WHITE,
+                        );
 
-                // Outer circle background
-                ui.painter().circle(
-                    handle_pos,
-                    handle_radius,
-                    egui::Color32::from_black_alpha(180),
-                    egui::Stroke::new(2.0, egui::Color32::WHITE),
-                );
-
-                // Chevron icons
-                let icon = icon_text(Icon::ChevronsLeftRight, 16.0);
-                ui.painter().text(
-                    handle_pos,
-                    egui::Align2::CENTER_CENTER,
-                    icon.text(),
-                    egui::FontId::new(16.0, egui::FontFamily::Name("lucide".into())),
-                    egui::Color32::WHITE,
-                );
-
-                if response.dragged() {
-                    if let Some(pointer_pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                        let rel_x = pointer_pos.x - rect.left();
-                        self.slider_pos = (rel_x / rect.width()).clamp(0.0, 1.0);
+                        if response.dragged() {
+                            if let Some(pointer_pos) = ctx.input(|i| i.pointer.latest_pos()) {
+                                let rel_x = pointer_pos.x - rect.left();
+                                self.slider_pos = (rel_x / rect.width()).clamp(0.0, 1.0);
+                            }
+                        }
                     }
-                }
+                    DiffMode::SideBySide => {
+                        ui.columns(2, |columns| {
+                            let size = columns[0].available_size();
+                            columns[0].vertical_centered(|ui| {
+                                ui.label(RichText::new("Original").strong());
+                                ui.add(egui::Image::from_texture(tex_left).fit_to_exact_size(size));
+                            });
+                            columns[1].vertical_centered(|ui| {
+                                ui.label(RichText::new("New").strong());
+                                ui.add(
+                                    egui::Image::from_texture(tex_right).fit_to_exact_size(size),
+                                );
+                            });
+                        });
+                    }
+                    DiffMode::Difference => {
+                        self.generate_diff_texture(ctx);
+                        if let Some(tex_diff) = &self.texture_diff {
+                            let available_size = ui.available_size();
+                            ui.centered_and_justified(|ui| {
+                                ui.add(
+                                    egui::Image::from_texture(tex_diff)
+                                        .fit_to_exact_size(available_size),
+                                );
+                            });
+                        } else {
+                            ui.centered_and_justified(|ui| {
+                                ui.label("Calculating difference...");
+                            });
+                        }
+                    }
+                    DiffMode::Fade => {
+                        let available_size = ui.available_size();
+                        let (rect, _response) =
+                            ui.allocate_exact_size(available_size, egui::Sense::hover());
 
-                if response.hovered() && (response.hover_pos().unwrap().x - swipe_x).abs() < 20.0 {
-                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeHorizontal);
+                        ui.painter().image(
+                            tex_left.id(),
+                            rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                        ui.painter().image(
+                            tex_right.id(),
+                            rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE.gamma_multiply(self.fade_opacity),
+                        );
+
+                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                            ui.add_space(10.0);
+                            ui.add(
+                                egui::Slider::new(&mut self.fade_opacity, 0.0..=1.0)
+                                    .text("Fade Opacity"),
+                            );
+                        });
+                    }
                 }
             } else if let Some(path) = self.path_left.clone().or(self.path_right.clone()) {
                 // One image is loaded. Is it in Git?
@@ -564,80 +755,127 @@ impl eframe::App for ImageDifferApp {
                                 ui.label("No git history found for this file.");
                             } else {
                                 egui::Frame::NONE
-                                    .fill(ui.visuals().faint_bg_color)
-                                    .corner_radius(8.0)
+                                    .fill(ui.visuals().window_fill)
+                                    .corner_radius(12.0)
                                     .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+                                    .inner_margin(egui::Margin::same(1)) // For precise border
                                     .show(ui, |ui| {
-                                        egui::ScrollArea::vertical().max_height(350.0).show(
+                                        ui.set_width(500.0);
+                                        egui::ScrollArea::vertical().max_height(400.0).show(
                                             ui,
                                             |ui| {
-                                                ui.set_width(450.0);
                                                 ui.add_space(8.0);
-                                                for commit in commits {
-                                                    ui.horizontal(|ui| {
-                                                        ui.add_space(8.0);
-                                                        if button(
-                                                            ui,
-                                                            &self.theme,
-                                                            format!(
-                                                                "[{}] {} ({})",
-                                                                commit.hash,
-                                                                commit.message,
-                                                                commit.date
-                                                            ),
-                                                            ControlVariant::Ghost,
-                                                            ControlSize::Md,
-                                                            true,
-                                                        )
-                                                        .clicked()
-                                                        {
-                                                            let is_left_empty =
-                                                                self.texture_left.is_none();
-                                                            self.load_from_git(
-                                                                ctx,
-                                                                &path,
-                                                                &commit.hash,
-                                                                is_left_empty,
+                                                for (i, commit) in commits.into_iter().enumerate() {
+                                                    if i > 0 {
+                                                        ui.add_space(2.0);
+                                                        ui.separator();
+                                                        ui.add_space(2.0);
+                                                    }
+
+                                                    let response = ui
+                                                        .horizontal(|ui| {
+                                                            ui.set_min_height(40.0);
+                                                            ui.add_space(8.0);
+
+                                                            // Hash column
+                                                            ui.colored_label(
+                                                                ui.visuals().selection.bg_fill,
+                                                                RichText::new(commit.hash.clone())
+                                                                    .monospace()
+                                                                    .strong(),
                                                             );
-                                                        }
-                                                        ui.add_space(8.0);
-                                                    });
-                                                    ui.add_space(4.0);
+                                                            ui.add_space(8.0);
+
+                                                            // Message (expanding)
+                                                            let message =
+                                                                if commit.message.len() > 40 {
+                                                                    format!(
+                                                                        "{}...",
+                                                                        &commit.message[..37]
+                                                                    )
+                                                                } else {
+                                                                    commit.message.clone()
+                                                                };
+                                                            ui.label(
+                                                                RichText::new(message).size(14.0),
+                                                            );
+
+                                                            ui.with_layout(
+                                                                egui::Layout::right_to_left(
+                                                                    egui::Align::Center,
+                                                                ),
+                                                                |ui| {
+                                                                    ui.add_space(8.0);
+                                                                    ui.colored_label(
+                                                                        ui.visuals()
+                                                                            .weak_text_color(),
+                                                                        RichText::new(commit.date)
+                                                                            .size(12.0),
+                                                                    );
+                                                                },
+                                                            );
+                                                        })
+                                                        .response;
+
+                                                    let rect = response.rect;
+                                                    let is_hovered = ui.rect_contains_pointer(rect);
+
+                                                    if is_hovered {
+                                                        ui.painter().rect_filled(
+                                                            rect,
+                                                            4.0,
+                                                            ui.visuals()
+                                                                .widgets
+                                                                .hovered
+                                                                .bg_fill
+                                                                .gamma_multiply(0.3),
+                                                        );
+                                                        ui.output_mut(|o| {
+                                                            o.cursor_icon =
+                                                                egui::CursorIcon::PointingHand
+                                                        });
+                                                    }
+
+                                                    // Make entire row clickable
+                                                    let click_area = ui.interact(
+                                                        rect,
+                                                        ui.id().with(i),
+                                                        egui::Sense::click(),
+                                                    );
+                                                    if click_area.clicked() {
+                                                        let is_left_empty =
+                                                            self.texture_left.is_none();
+                                                        self.load_from_git(
+                                                            ctx,
+                                                            &path,
+                                                            &commit.hash,
+                                                            is_left_empty,
+                                                        );
+                                                    }
                                                 }
+                                                ui.add_space(8.0);
                                             },
                                         );
                                     });
                             }
 
-                            ui.add_space(20.0);
-                            separator(ui, &self.theme, SeparatorProps::default());
-                            ui.add_space(20.0);
+                            ui.add_space(24.0);
 
-                            ui.horizontal(|ui| {
-                                ui.set_width(450.0);
-                                ui.with_layout(
-                                    egui::Layout::centered_and_justified(
-                                        egui::Direction::LeftToRight,
-                                    ),
-                                    |ui| {
-                                        if button(
-                                            ui,
-                                            &self.theme,
-                                            "Select local image instead",
-                                            ControlVariant::Outline,
-                                            ControlSize::Sm,
-                                            true,
-                                        )
-                                        .clicked()
-                                        {
-                                            if let Some(p) = rfd::FileDialog::new().pick_file() {
-                                                let is_left_empty = self.texture_left.is_none();
-                                                self.load_image_to_texture(ctx, p, is_left_empty);
-                                            }
-                                        }
-                                    },
-                                );
-                            });
+                            if button(
+                                ui,
+                                &self.theme,
+                                "Select local image instead",
+                                ControlVariant::Ghost,
+                                ControlSize::Sm,
+                                true,
+                            )
+                            .clicked()
+                            {
+                                if let Some(p) = rfd::FileDialog::new().pick_file() {
+                                    let is_left_empty = self.texture_left.is_none();
+                                    self.load_image_to_texture(ctx, p, is_left_empty);
+                                }
+                            }
                         });
                     });
                 } else {
@@ -710,111 +948,108 @@ impl eframe::App for ImageDifferApp {
                     });
                 }
             } else {
-                // Instruction Screen
+                // Mode Switcher Empty State (Diffchecker style)
                 ui.centered_and_justified(|ui| {
-                    ui.vertical_centered(|ui| {
-                        let main_icon =
-                            icon_text(Icon::Layers, 48.0).color(ui.visuals().selection.bg_fill);
-                        ui.label(main_icon);
-                        ui.add_space(16.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 24.0;
 
-                        Label::new("Image Differ")
-                            .size(ControlSize::Lg)
-                            .show(ui, &self.theme);
-                        ui.add_space(8.0);
-                        Label::new("Modern image comparison. Precise and fast.")
-                            .size(ControlSize::Sm)
-                            .show(ui, &self.theme);
+                        let card_width = 400.0;
+                        let card_height = 300.0;
 
-                        ui.add_space(48.0);
-
-                        // --- Drop Zone ---
+                        // Original Card
                         egui::Frame::NONE
                             .fill(ui.visuals().faint_bg_color)
                             .corner_radius(12.0)
                             .stroke(egui::Stroke::new(
                                 2.0,
-                                ui.visuals().selection.bg_fill.gamma_multiply(0.5),
+                                ui.visuals().widgets.noninteractive.bg_stroke.color,
                             ))
                             .show(ui, |ui| {
-                                ui.set_min_width(500.0);
-                                ui.set_min_height(200.0);
+                                ui.set_min_size(egui::vec2(card_width, card_height));
                                 ui.centered_and_justified(|ui| {
                                     ui.vertical_centered(|ui| {
+                                        ui.add_space(80.0);
+                                        ui.label(icon_text(Icon::Image, 48.0));
                                         ui.add_space(20.0);
-                                        let upload_icon = icon_text(Icon::Upload, 24.0);
-                                        ui.label(upload_icon);
-                                        ui.add_space(8.0);
-                                        ui.label("Drop images here or click below");
-                                        ui.add_space(20.0);
-
+                                        Label::new("Original Image")
+                                            .size(ControlSize::Lg)
+                                            .show(ui, &self.theme);
+                                        ui.add_space(10.0);
                                         if button(
                                             ui,
                                             &self.theme,
-                                            "Select Image Pair",
-                                            ControlVariant::Primary,
-                                            ControlSize::Lg,
+                                            "Browse File",
+                                            ControlVariant::Outline,
+                                            ControlSize::Sm,
                                             true,
                                         )
                                         .clicked()
                                         {
-                                            if let Some(paths) = rfd::FileDialog::new().pick_files()
-                                            {
-                                                let mut iter = paths.into_iter();
-                                                if let Some(p1) = iter.next() {
-                                                    self.load_image_to_texture(ctx, p1, true);
-                                                }
-                                                if let Some(p2) = iter.next() {
-                                                    self.load_image_to_texture(ctx, p2, false);
-                                                }
+                                            if let Some(p) = rfd::FileDialog::new().pick_file() {
+                                                self.load_image_to_texture(ctx, p, true);
                                             }
                                         }
-                                        ui.add_space(20.0);
                                     });
                                 });
                             });
 
-                        ui.add_space(32.0);
-
-                        ui.label("Alternatively, select one by one:");
-                        ui.add_space(16.0);
-
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 24.0;
-
-                            if button(
-                                ui,
-                                &self.theme,
-                                "Select Image 1",
-                                ControlVariant::Outline,
-                                ControlSize::Md,
-                                true,
-                            )
-                            .clicked()
-                            {
-                                if let Some(path) = rfd::FileDialog::new().pick_file() {
-                                    self.load_image_to_texture(ctx, path, true);
-                                }
-                            }
-
-                            if button(
-                                ui,
-                                &self.theme,
-                                "Select Image 2",
-                                ControlVariant::Outline,
-                                ControlSize::Md,
-                                true,
-                            )
-                            .clicked()
-                            {
-                                if let Some(path) = rfd::FileDialog::new().pick_file() {
-                                    self.load_image_to_texture(ctx, path, false);
-                                }
-                            }
-                        });
+                        // New Card
+                        egui::Frame::NONE
+                            .fill(ui.visuals().faint_bg_color)
+                            .corner_radius(12.0)
+                            .stroke(egui::Stroke::new(
+                                2.0,
+                                ui.visuals().widgets.noninteractive.bg_stroke.color,
+                            ))
+                            .show(ui, |ui| {
+                                ui.set_min_size(egui::vec2(card_width, card_height));
+                                ui.centered_and_justified(|ui| {
+                                    ui.vertical_centered(|ui| {
+                                        ui.add_space(80.0);
+                                        ui.label(icon_text(Icon::ImagePlus, 48.0));
+                                        ui.add_space(20.0);
+                                        Label::new("New Image")
+                                            .size(ControlSize::Lg)
+                                            .show(ui, &self.theme);
+                                        ui.add_space(10.0);
+                                        if button(
+                                            ui,
+                                            &self.theme,
+                                            "Browse File",
+                                            ControlVariant::Outline,
+                                            ControlSize::Sm,
+                                            true,
+                                        )
+                                        .clicked()
+                                        {
+                                            if let Some(p) = rfd::FileDialog::new().pick_file() {
+                                                self.load_image_to_texture(ctx, p, false);
+                                            }
+                                        }
+                                    });
+                                });
+                            });
                     });
                 });
             }
+        });
+
+        egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(8.0);
+                ui.label(RichText::new("IMAGE DIFFER").size(10.0).weak());
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(8.0);
+                    // Dummy zoom - could be implemented with a state scale f32
+                    ui.add_space(4.0);
+                    ui.label("100%");
+                    ui.add_space(4.0);
+                    ui.label(icon_text(Icon::Search, 12.0));
+                });
+            });
+            ui.add_space(4.0);
         });
     }
 }
