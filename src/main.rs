@@ -2,54 +2,32 @@
 
 use eframe::egui;
 use eframe::epaint::{ColorImage, TextureHandle};
-use egui::{FontData, FontDefinitions, FontFamily, FontId, RichText};
-use egui_shadcn::{ControlSize, ControlVariant, Label, SeparatorProps, Theme, button, separator};
+use egui::{Color32, FontData, FontDefinitions, FontFamily, FontId, RichText, Stroke};
+use egui_shadcn::Theme;
 use lucide_icons::{Icon, LUCIDE_FONT_BYTES};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+// ── Palette ────────────────────────────────────────────────────────────────
+const ACCENT: Color32 = Color32::from_rgb(0x06, 0xb6, 0xd4);
+const BG_DEEP: Color32 = Color32::from_rgb(0x09, 0x09, 0x0e);
+const BG_SURFACE: Color32 = Color32::from_rgb(0x10, 0x10, 0x18);
+const BG_CARD: Color32 = Color32::from_rgb(0x18, 0x18, 0x22);
+const BG_ELEVATED: Color32 = Color32::from_rgb(0x22, 0x22, 0x2e);
+const BORDER: Color32 = Color32::from_rgb(0x28, 0x28, 0x38);
+const TEXT: Color32 = Color32::from_rgb(0xe0, 0xe6, 0xf0);
+const TEXT_MUTED: Color32 = Color32::from_rgb(0x58, 0x68, 0x82);
+const TEXT_DIM: Color32 = Color32::from_rgb(0x30, 0x38, 0x48);
+const SUCCESS: Color32 = Color32::from_rgb(0x10, 0xb9, 0x81);
+const DANGER: Color32 = Color32::from_rgb(0xf8, 0x71, 0x71);
+
+// ── Types ───────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
 struct GitCommit {
     hash: String,
     message: String,
     date: String,
-}
-
-fn main() -> eframe::Result<()> {
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1100.0, 800.0])
-            .with_min_inner_size([600.0, 400.0]),
-        ..Default::default()
-    };
-
-    eframe::run_native(
-        "Image Differ",
-        native_options,
-        Box::new(|cc| {
-            ensure_lucide_icon_font(&cc.egui_ctx);
-            Ok(Box::new(ImageDifferApp::new(cc)))
-        }),
-    )
-}
-
-fn ensure_lucide_icon_font(ctx: &egui::Context) {
-    let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        "lucide".into(),
-        FontData::from_static(LUCIDE_FONT_BYTES).into(),
-    );
-    fonts
-        .families
-        .entry(FontFamily::Name("lucide".into()))
-        .or_default()
-        .push("lucide".into());
-    ctx.set_fonts(fonts);
-}
-
-fn icon_text(icon: Icon, size: f32) -> RichText {
-    RichText::new(icon.unicode().to_string())
-        .font(FontId::new(size, FontFamily::Name("lucide".into())))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,23 +42,123 @@ struct ImageDifferApp {
     texture_left: Option<TextureHandle>,
     texture_right: Option<TextureHandle>,
     texture_diff: Option<TextureHandle>,
-
-    // We store the raw image data for diffing
     image_left: Option<image::RgbaImage>,
     image_right: Option<image::RgbaImage>,
-
     path_left: Option<PathBuf>,
     path_right: Option<PathBuf>,
     slider_pos: f32,
     fade_opacity: f32,
     diff_mode: DiffMode,
+    diff_pixel_pct: Option<f64>,
     error_msg: Option<String>,
     theme: Theme,
-
-    // Git integration
     commits_left: Vec<GitCommit>,
     commits_right: Vec<GitCommit>,
 }
+
+// ── Font / Visual Setup ─────────────────────────────────────────────────────
+
+fn setup_fonts(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "lucide".into(),
+        FontData::from_static(LUCIDE_FONT_BYTES).into(),
+    );
+    fonts
+        .families
+        .entry(FontFamily::Name("lucide".into()))
+        .or_default()
+        .push("lucide".into());
+    // Lucide fallback in Proportional so icons render in mixed strings
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .push("lucide".into());
+    ctx.set_fonts(fonts);
+}
+
+fn setup_visuals(ctx: &egui::Context) {
+    let mut v = egui::Visuals::dark();
+    v.panel_fill = BG_SURFACE;
+    v.window_fill = BG_SURFACE;
+    v.faint_bg_color = BG_CARD;
+    v.extreme_bg_color = BG_DEEP;
+    v.selection.bg_fill = ACCENT;
+    v.selection.stroke = Stroke::new(1.0, Color32::from_rgb(0x67, 0xe8, 0xf9));
+    v.hyperlink_color = ACCENT;
+
+    let mk = |bg: Color32, border: Color32, fg: Color32| egui::style::WidgetVisuals {
+        bg_fill: bg,
+        weak_bg_fill: bg,
+        bg_stroke: Stroke::new(1.0, border),
+        fg_stroke: Stroke::new(1.0, fg),
+        corner_radius: egui::CornerRadius::same(6),
+        expansion: 0.0,
+    };
+    v.widgets.noninteractive = mk(BG_CARD, BORDER, TEXT_MUTED);
+    v.widgets.inactive = mk(BG_ELEVATED, BORDER, TEXT);
+    v.widgets.hovered = mk(
+        Color32::from_rgb(0x24, 0x24, 0x32),
+        Color32::from_rgb(0x3a, 0x3a, 0x52),
+        Color32::WHITE,
+    );
+    v.widgets.active = mk(
+        Color32::from_rgb(0x05, 0x90, 0xa8),
+        ACCENT,
+        Color32::WHITE,
+    );
+    v.widgets.open = mk(BG_ELEVATED, BORDER, TEXT);
+
+    v.window_stroke = Stroke::new(1.0, BORDER);
+    v.window_corner_radius = egui::CornerRadius::same(8);
+
+    ctx.set_visuals(v);
+
+    let mut style = (*ctx.style()).clone();
+    style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.spacing.window_margin = egui::Margin::same(0);
+    style.spacing.menu_margin = egui::Margin::same(6);
+    ctx.set_style(style);
+}
+
+fn icon_text(icon: Icon, size: f32) -> RichText {
+    RichText::new(icon.unicode().to_string())
+        .font(FontId::new(size, FontFamily::Name("lucide".into())))
+}
+
+fn icon_str(icon: Icon) -> String {
+    icon.unicode().to_string()
+}
+
+/// Fit an image into a container rect maintaining aspect ratio (letterbox).
+fn fit_in_rect(img_size: egui::Vec2, container: egui::Rect) -> egui::Rect {
+    let scale = (container.width() / img_size.x).min(container.height() / img_size.y);
+    let sz = img_size * scale;
+    egui::Rect::from_center_size(container.center(), sz)
+}
+
+// ── Main ────────────────────────────────────────────────────────────────────
+
+fn main() -> eframe::Result<()> {
+    eframe::run_native(
+        "IDiffer",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([1200.0, 800.0])
+                .with_min_inner_size([700.0, 500.0]),
+            ..Default::default()
+        },
+        Box::new(|cc| {
+            setup_fonts(&cc.egui_ctx);
+            setup_visuals(&cc.egui_ctx);
+            Ok(Box::new(ImageDifferApp::new(cc)))
+        }),
+    )
+}
+
+// ── App Impl ─────────────────────────────────────────────────────────────────
 
 impl ImageDifferApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
@@ -95,6 +173,7 @@ impl ImageDifferApp {
             slider_pos: 0.5,
             fade_opacity: 0.5,
             diff_mode: DiffMode::Slider,
+            diff_pixel_pct: None,
             error_msg: None,
             theme: Theme::default(),
             commits_left: Vec::new(),
@@ -107,949 +186,789 @@ impl ImageDifferApp {
             .arg("log")
             .arg("--pretty=format:%h|%s|%cd")
             .arg("--date=short")
-            // .arg("-n")
-            // .arg("10")
             .arg("--")
             .arg(path)
             .output();
-
         match output {
-            Ok(output) if output.status.success() => {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                stdout
-                    .lines()
-                    .filter_map(|line| {
-                        let parts: Vec<&str> = line.split('|').collect();
-                        if parts.len() >= 3 {
-                            Some(GitCommit {
-                                hash: parts[0].to_string(),
-                                message: parts[1].to_string(),
-                                date: parts[2].to_string(),
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            }
-            _ => Vec::new(),
+            Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let p: Vec<&str> = line.splitn(3, '|').collect();
+                    if p.len() >= 3 {
+                        Some(GitCommit { hash: p[0].into(), message: p[1].into(), date: p[2].into() })
+                    } else { None }
+                })
+                .collect(),
+            _ => vec![],
         }
     }
 
     fn load_from_git(&mut self, ctx: &egui::Context, path: &Path, rev: &str, is_left: bool) {
-        // We need the relative path from the git root
-        let root_output = Command::new("git")
-            .arg("rev-parse")
-            .arg("--show-toplevel")
-            .output();
+        let root = Command::new("git").arg("rev-parse").arg("--show-toplevel").output();
+        let rel = if let Ok(o) = root {
+            let root_str = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            path.strip_prefix(&root_str).unwrap_or(path).to_path_buf()
+        } else { path.to_path_buf() };
 
-        let rel_path = if let Ok(out) = root_output {
-            let root = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            path.strip_prefix(root).unwrap_or(path).to_path_buf()
-        } else {
-            path.to_path_buf()
-        };
-
-        let output = Command::new("git")
-            .arg("show")
-            .arg(format!("{}:{}", rev, rel_path.display()))
-            .output();
-
-        match output {
-            Ok(output) if output.status.success() => {
-                match image::load_from_memory(&output.stdout) {
-                    Ok(dynamic_image) => {
-                        let size = [
-                            dynamic_image.width() as usize,
-                            dynamic_image.height() as usize,
-                        ];
-                        let image_buffer = dynamic_image.to_rgba8();
-                        let pixels = image_buffer.as_flat_samples();
-                        let color_image =
-                            ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-
-                        let name =
-                            format!("{} ({})", path.file_name().unwrap().to_string_lossy(), rev);
-                        let handle = ctx.load_texture(name, color_image, Default::default());
-
+        match Command::new("git").arg("show").arg(format!("{}:{}", rev, rel.display())).output() {
+            Ok(o) if o.status.success() => {
+                match image::load_from_memory(&o.stdout) {
+                    Ok(img) => {
+                        let size = [img.width() as usize, img.height() as usize];
+                        let buf = img.to_rgba8();
+                        let pixels = buf.as_flat_samples();
+                        let ci = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
+                        let name = format!("{} ({})", path.file_name().unwrap().to_string_lossy(), rev);
+                        let handle = ctx.load_texture(name, ci, Default::default());
                         if is_left {
                             self.texture_left = Some(handle);
-                            self.image_left = Some(image_buffer);
-                            self.path_left = Some(path.to_path_buf());
+                            self.image_left = Some(buf);
+                            self.path_left = Some(path.into());
                             self.commits_left.clear();
                         } else {
                             self.texture_right = Some(handle);
-                            self.image_right = Some(image_buffer);
-                            self.path_right = Some(path.to_path_buf());
+                            self.image_right = Some(buf);
+                            self.path_right = Some(path.into());
                             self.commits_right.clear();
                         }
-                        self.texture_diff = None; // Force clear diff
+                        self.texture_diff = None;
+                        self.diff_pixel_pct = None;
                         self.error_msg = None;
                     }
-                    Err(e) => {
-                        self.error_msg =
-                            Some(format!("Failed to parse image from git ({}): {}", rev, e));
-                    }
+                    Err(e) => self.error_msg = Some(format!("Image parse error ({rev}): {e}")),
                 }
             }
-            Ok(out) => {
-                self.error_msg = Some(format!(
-                    "Git error: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                ));
-            }
-            Err(e) => {
-                self.error_msg = Some(format!("Failed to run git: {}", e));
-            }
+            Ok(o) => self.error_msg = Some(format!("git error: {}", String::from_utf8_lossy(&o.stderr))),
+            Err(e) => self.error_msg = Some(format!("git failed: {e}")),
         }
     }
 
     fn is_in_git_repo(&self, path: &Path) -> bool {
-        let output = Command::new("git")
-            .arg("rev-parse")
-            .arg("--is-inside-work-tree")
+        Command::new("git")
+            .arg("rev-parse").arg("--is-inside-work-tree")
             .current_dir(path.parent().unwrap_or(Path::new(".")))
-            .output();
-
-        match output {
-            Ok(output) => {
-                output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true"
-            }
-            _ => false,
-        }
+            .output()
+            .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
+            .unwrap_or(false)
     }
 
     fn load_image_to_texture(&mut self, ctx: &egui::Context, path: PathBuf, is_left: bool) {
         match image::open(&path) {
-            Ok(dynamic_image) => {
-                let size = [
-                    dynamic_image.width() as usize,
-                    dynamic_image.height() as usize,
-                ];
-                let image_buffer = dynamic_image.to_rgba8();
-                let pixels = image_buffer.as_flat_samples();
-                let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-
+            Ok(img) => {
+                let size = [img.width() as usize, img.height() as usize];
+                let buf = img.to_rgba8();
+                let pixels = buf.as_flat_samples();
+                let ci = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
                 let name = path.file_name().unwrap().to_string_lossy();
-                let handle = ctx.load_texture(name, color_image, Default::default());
-
+                let handle = ctx.load_texture(name, ci, Default::default());
                 if is_left {
                     self.texture_left = Some(handle);
-                    self.image_left = Some(image_buffer);
+                    self.image_left = Some(buf);
                     self.path_left = Some(path);
                     self.commits_left.clear();
                 } else {
                     self.texture_right = Some(handle);
-                    self.image_right = Some(image_buffer);
+                    self.image_right = Some(buf);
                     self.path_right = Some(path);
                     self.commits_right.clear();
                 }
-                self.texture_diff = None; // Force clear diff
+                self.texture_diff = None;
+                self.diff_pixel_pct = None;
                 self.error_msg = None;
             }
-            Err(e) => {
-                self.error_msg = Some(format!("Failed to load {}: {}", path.display(), e));
-            }
+            Err(e) => self.error_msg = Some(format!("Load failed: {e}")),
         }
     }
 
     fn generate_diff_texture(&mut self, ctx: &egui::Context) {
-        if self.texture_diff.is_some() {
-            return;
-        }
-
-        if let (Some(img_left), Some(img_right)) = (&self.image_left, &self.image_right) {
-            let width = img_left.width().min(img_right.width());
-            let height = img_left.height().min(img_right.height());
-
-            let mut diff_img = image::RgbaImage::new(width, height);
-
-            for y in 0..height {
-                for x in 0..width {
-                    let p1 = img_left.get_pixel(x, y);
-                    let p2 = img_right.get_pixel(x, y);
-
+        if self.texture_diff.is_some() { return; }
+        if let (Some(l), Some(r)) = (&self.image_left, &self.image_right) {
+            let w = l.width().min(r.width());
+            let h = l.height().min(r.height());
+            let mut diff = image::RgbaImage::new(w, h);
+            let mut diff_count: u64 = 0;
+            for y in 0..h {
+                for x in 0..w {
+                    let p1 = l.get_pixel(x, y);
+                    let p2 = r.get_pixel(x, y);
                     if p1 != p2 {
-                        // Magenta for diff (Diffchecker style)
-                        diff_img.put_pixel(x, y, image::Rgba([255, 0, 255, 255]));
+                        diff_count += 1;
+                        diff.put_pixel(x, y, image::Rgba([0xfc, 0x72, 0x5d, 0xff]));
                     } else {
-                        // Dimm grayscale for base
-                        let gray = (p1[0] as u32 + p1[1] as u32 + p1[2] as u32) / 8; // Very dim
-                        diff_img.put_pixel(
-                            x,
-                            y,
-                            image::Rgba([gray as u8, gray as u8, gray as u8, 255]),
-                        );
+                        let g = (p1[0] as u32 + p1[1] as u32 + p1[2] as u32) / 4;
+                        diff.put_pixel(x, y, image::Rgba([g as u8, g as u8, g as u8, 0xff]));
                     }
                 }
             }
+            self.diff_pixel_pct = Some(diff_count as f64 / (w * h) as f64 * 100.0);
+            let size = [w as usize, h as usize];
+            let px = diff.as_flat_samples();
+            let ci = ColorImage::from_rgba_unmultiplied(size, px.as_slice());
+            self.texture_diff = Some(ctx.load_texture("diff", ci, Default::default()));
+        }
+    }
 
-            let size = [width as usize, height as usize];
-            let pixels = diff_img.as_flat_samples();
-            let color_image = ColorImage::from_rgba_unmultiplied(size, pixels.as_slice());
-            self.texture_diff =
-                Some(ctx.load_texture("pixel_diff", color_image, Default::default()));
+    fn clear_all(&mut self) {
+        self.texture_left = None;
+        self.texture_right = None;
+        self.texture_diff = None;
+        self.image_left = None;
+        self.image_right = None;
+        self.path_left = None;
+        self.path_right = None;
+        self.diff_pixel_pct = None;
+        self.error_msg = None;
+        self.commits_left.clear();
+        self.commits_right.clear();
+    }
+
+    // Draw a small image‑slot pill in the header (thumbnail + name + git + delete)
+    fn render_slot_header(
+        &mut self,
+        ui: &mut egui::Ui,
+        is_left: bool,
+        label: &str,
+        ctx: &egui::Context,
+    ) {
+        let has_tex = if is_left { self.texture_left.is_some() } else { self.texture_right.is_some() };
+
+        if has_tex {
+            // Pill container
+            let _frame_resp = egui::Frame::NONE
+                .fill(BG_CARD)
+                .corner_radius(egui::CornerRadius::same(8))
+                .stroke(Stroke::new(1.0, BORDER))
+                .inner_margin(egui::Margin { left: 6, right: 6, top: 4, bottom: 4 })
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        // thumbnail
+                        if let Some(tex) = if is_left { &self.texture_left } else { &self.texture_right } {
+                            ui.add(egui::Image::from_texture(tex).max_size(egui::vec2(28.0, 28.0)));
+                        }
+                        // filename
+                        let name = if is_left { &self.path_left } else { &self.path_right };
+                        let display = name.as_ref()
+                            .and_then(|p| p.file_name())
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let truncated = if display.len() > 22 {
+                            format!("{}…", &display[..20])
+                        } else { display };
+                        ui.label(RichText::new(truncated).size(12.0).color(TEXT));
+
+                        // git history button
+                        let path_clone = if is_left { self.path_left.clone() } else { self.path_right.clone() };
+                        if let Some(path) = path_clone {
+                            let hist_btn = egui::Button::new(
+                                RichText::new(icon_str(Icon::GitBranch)).size(12.0).color(TEXT_MUTED)
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE);
+                            let _hist_resp = ui.add(hist_btn).on_hover_text("Git history");
+                            ui.menu_button(RichText::new("").size(0.0), |ui| {
+                                let commits = if is_left {
+                                    if self.commits_left.is_empty() {
+                                        self.commits_left = self.get_git_history(&path);
+                                    }
+                                    self.commits_left.clone()
+                                } else {
+                                    if self.commits_right.is_empty() {
+                                        self.commits_right = self.get_git_history(&path);
+                                    }
+                                    self.commits_right.clone()
+                                };
+                                if commits.is_empty() {
+                                    ui.label(RichText::new("No git history").size(12.0).color(TEXT_MUTED));
+                                } else {
+                                    egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                                        ui.set_min_width(360.0);
+                                        for commit in &commits {
+                                            ui.horizontal(|ui| {
+                                                ui.label(RichText::new(&commit.hash).monospace().size(11.0).color(ACCENT));
+                                                ui.add_space(4.0);
+                                                let msg = if commit.message.len() > 36 {
+                                                    format!("{}…", &commit.message[..34])
+                                                } else { commit.message.clone() };
+                                                if ui.selectable_label(false, RichText::new(msg).size(12.0).color(TEXT)).clicked() {
+                                                    self.load_from_git(ctx, &path, &commit.hash, is_left);
+                                                    ui.close();
+                                                }
+                                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                    ui.label(RichText::new(&commit.date).size(10.0).color(TEXT_MUTED));
+                                                });
+                                            });
+                                        }
+                                    });
+                                }
+                            });
+                        }
+
+                        // delete button
+                        let del_btn = egui::Button::new(
+                            RichText::new(icon_str(Icon::X)).size(11.0).color(TEXT_MUTED)
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::NONE);
+                        if ui.add(del_btn).on_hover_text("Remove").clicked() {
+                            if is_left {
+                                self.texture_left = None;
+                                self.image_left = None;
+                                self.path_left = None;
+                                self.commits_left.clear();
+                            } else {
+                                self.texture_right = None;
+                                self.image_right = None;
+                                self.path_right = None;
+                                self.commits_right.clear();
+                            }
+                            self.texture_diff = None;
+                            self.diff_pixel_pct = None;
+                        }
+                    });
+                });
+        } else {
+            // Empty slot button
+            let slot_label = RichText::new(format!("{} {} image", icon_str(Icon::Plus), label))
+                .size(12.0)
+                .color(TEXT_MUTED);
+            let slot_btn = egui::Button::new(slot_label)
+                .fill(BG_CARD)
+                .corner_radius(egui::CornerRadius::same(8))
+                .stroke(Stroke::new(1.0, BORDER));
+            if ui.add(slot_btn).clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "gif"])
+                    .pick_file()
+                {
+                    self.load_image_to_texture(ctx, path, is_left);
+                }
+            }
         }
     }
 }
 
+// ── App::update ──────────────────────────────────────────────────────────────
+
 impl eframe::App for ImageDifferApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("top_header").show(ctx, |ui| {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                Label::new("Image Differ")
-                    .size(ControlSize::Lg)
-                    .show(ui, &self.theme);
+        let has_both = self.texture_left.is_some() && self.texture_right.is_some();
+        let has_one = self.texture_left.is_some() || self.texture_right.is_some();
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(8.0);
-
-                    // --- Multi Load ---
-                    let multi_icon = icon_text(Icon::Files, 14.0);
-                    if button(
-                        ui,
-                        &self.theme,
-                        multi_icon,
-                        ControlVariant::Outline,
-                        ControlSize::Sm,
-                        true,
-                    )
-                    .on_hover_text("Select Image Pair")
-                    .clicked()
-                    {
-                        if let Some(paths) = rfd::FileDialog::new()
-                            .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
-                            .pick_files()
-                        {
-                            let mut iter = paths.into_iter();
-                            if let Some(p1) = iter.next() {
-                                self.load_image_to_texture(ctx, p1, true);
-                            }
-                            if let Some(p2) = iter.next() {
-                                self.load_image_to_texture(ctx, p2, false);
-                            }
-                        }
-                    }
-
-                    ui.add_space(16.0);
-                    ui.separator();
-                    ui.add_space(16.0);
-
-                    // --- Right Image Slot ---
-                    if let Some(tex) = self.texture_right.clone() {
-                        let trash_icon = icon_text(Icon::Trash2, 14.0);
-                        if button(
-                            ui,
-                            &self.theme,
-                            trash_icon,
-                            ControlVariant::Destructive,
-                            ControlSize::IconSm,
-                            true,
-                        )
-                        .on_hover_text("Clear selection")
-                        .clicked()
-                        {
-                            self.texture_right = None;
-                            self.path_right = None;
-                        }
-
-                        // --- Git History (Right) ---
-                        if let Some(path) = self.path_right.clone() {
-                            let history_icon = icon_text(Icon::History, 14.0);
-                            ui.menu_button(history_icon, |ui| {
-                                if self.commits_right.is_empty() {
-                                    self.commits_right = self.get_git_history(&path);
-                                }
-
-                                let commits = self.commits_right.clone(); // Clone to avoid borrow conflict
-                                if commits.is_empty() {
-                                    ui.label("No git history found");
-                                } else {
-                                    for commit in commits {
-                                        if ui
-                                            .button(format!(
-                                                "[{}] {} ({})",
-                                                commit.hash, commit.message, commit.date
-                                            ))
-                                            .clicked()
-                                        {
-                                            self.load_from_git(ctx, &path, &commit.hash, false);
-                                            ui.close();
-                                        }
-                                    }
-                                }
-                            });
-                        }
-
-                        ui.add_space(4.0);
-                        let name = self
-                            .path_right
-                            .as_ref()
-                            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        ui.label(name);
-
-                        ui.add_space(4.0);
-                        ui.add(egui::Image::from_texture(&tex).max_size(egui::vec2(32.0, 32.0)));
-                    } else {
-                        let right_icon = icon_text(Icon::Image, 14.0);
-                        if button(
-                            ui,
-                            &self.theme,
-                            right_icon,
-                            ControlVariant::Outline,
-                            ControlSize::Sm,
-                            true,
-                        )
-                        .on_hover_text("Load Right Image")
-                        .clicked()
-                        {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
-                                .pick_file()
-                            {
-                                self.load_image_to_texture(ctx, path, false);
-                            }
-                        }
-                    }
-
-                    ui.add_space(16.0);
-                    ui.separator();
-                    ui.add_space(16.0);
-
-                    // --- Left Image Slot ---
-                    if let Some(tex) = self.texture_left.clone() {
-                        let trash_icon = icon_text(Icon::Trash2, 14.0);
-                        if button(
-                            ui,
-                            &self.theme,
-                            trash_icon,
-                            ControlVariant::Destructive,
-                            ControlSize::IconSm,
-                            true,
-                        )
-                        .on_hover_text("Clear selection")
-                        .clicked()
-                        {
-                            self.texture_left = None;
-                            self.path_left = None;
-                        }
-
-                        // --- Git History (Left) ---
-                        if let Some(path) = self.path_left.clone() {
-                            let history_icon = icon_text(Icon::History, 14.0);
-                            ui.menu_button(history_icon, |ui| {
-                                if self.commits_left.is_empty() {
-                                    self.commits_left = self.get_git_history(&path);
-                                }
-
-                                let commits = self.commits_left.clone(); // Clone to avoid borrow conflict
-                                if commits.is_empty() {
-                                    ui.label("No git history found");
-                                } else {
-                                    for commit in commits {
-                                        if ui
-                                            .button(format!(
-                                                "[{}] {} ({})",
-                                                commit.hash, commit.message, commit.date
-                                            ))
-                                            .clicked()
-                                        {
-                                            self.load_from_git(ctx, &path, &commit.hash, true);
-                                            ui.close();
-                                        }
-                                    }
-                                }
-                            });
-                        }
-
-                        ui.add_space(4.0);
-                        let name = self
-                            .path_left
-                            .as_ref()
-                            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        ui.label(name);
-
-                        ui.add_space(4.0);
-                        ui.add(egui::Image::from_texture(&tex).max_size(egui::vec2(32.0, 32.0)));
-                    } else {
-                        let left_icon = icon_text(Icon::Image, 14.0);
-                        if button(
-                            ui,
-                            &self.theme,
-                            left_icon,
-                            ControlVariant::Outline,
-                            ControlSize::Sm,
-                            true,
-                        )
-                        .on_hover_text("Load Left Image")
-                        .clicked()
-                        {
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
-                                .pick_file()
-                            {
-                                self.load_image_to_texture(ctx, path, true);
-                            }
-                        }
-                    }
-                });
-            });
-            ui.add_space(8.0);
-            separator(ui, &self.theme, SeparatorProps::default());
-        });
-
-        // --- Global Drag and Drop ---
+        // ── Drag & Drop ──────────────────────────────────────────────────────
         ctx.input(|i| {
             if !i.raw.dropped_files.is_empty() {
                 let mut iter = i.raw.dropped_files.clone().into_iter();
-                if let Some(f1) = iter.next() {
-                    if let Some(path) = f1.path {
-                        self.load_image_to_texture(ctx, path, true);
-                    }
+                if let Some(f) = iter.next() {
+                    if let Some(p) = f.path { self.load_image_to_texture(ctx, p, true); }
                 }
-                if let Some(f2) = iter.next() {
-                    if let Some(path) = f2.path {
-                        self.load_image_to_texture(ctx, path, false);
-                    }
+                if let Some(f) = iter.next() {
+                    if let Some(p) = f.path { self.load_image_to_texture(ctx, p, false); }
                 }
             }
         });
 
-        egui::TopBottomPanel::top("mode_toolbar").show(ctx, |ui| {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-
-                // Mode Selectors (Diffchecker style)
-                let modes = [
-                    (DiffMode::Slider, Icon::Split, "Slider"),
-                    (DiffMode::SideBySide, Icon::Columns2, "Side by Side"),
-                    (DiffMode::Difference, Icon::Target, "Difference"),
-                    (DiffMode::Fade, Icon::Sun, "Fade"),
-                ];
-
-                for (mode, icon, label) in modes {
-                    let is_selected = self.diff_mode == mode;
-                    if button(
-                        ui,
-                        &self.theme,
-                        format!(" {} {}", icon_text(icon, 14.0).text(), label),
-                        if is_selected {
-                            ControlVariant::Primary
-                        } else {
-                            ControlVariant::Ghost
-                        },
-                        ControlSize::Sm,
-                        true,
-                    )
-                    .clicked()
-                    {
-                        self.diff_mode = mode;
+        // ── Footer ───────────────────────────────────────────────────────────
+        egui::TopBottomPanel::bottom("footer")
+            .frame(egui::Frame::NONE.fill(BG_DEEP).stroke(Stroke::new(1.0, BORDER)))
+            .show(ctx, |ui| {
+                ui.set_height(24.0);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add_space(12.0);
+                    if let (Some(l), Some(r)) = (&self.image_left, &self.image_right) {
+                        ui.label(RichText::new(format!("{}×{}", l.width(), l.height())).size(10.0).color(TEXT_DIM).monospace());
+                        ui.label(RichText::new(" → ").size(10.0).color(TEXT_DIM));
+                        ui.label(RichText::new(format!("{}×{}", r.width(), r.height())).size(10.0).color(TEXT_DIM).monospace());
                     }
-                    ui.add_space(4.0);
-                }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(8.0);
-                    if button(
-                        ui,
-                        &self.theme,
-                        "Clear",
-                        ControlVariant::Outline,
-                        ControlSize::Sm,
-                        true,
-                    )
-                    .clicked()
-                    {
-                        self.texture_left = None;
-                        self.texture_right = None;
-                        self.texture_diff = None;
-                        self.path_left = None;
-                        self.path_right = None;
-                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(12.0);
+                        ui.label(RichText::new("IDIFFER").size(9.0).color(TEXT_DIM).strong());
+                        ui.add_space(6.0);
+                        // accent dot
+                        let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                        ui.painter().circle_filled(dot_rect.center(), 3.0, ACCENT);
+                    });
                 });
             });
-            ui.add_space(8.0);
-            separator(ui, &self.theme, SeparatorProps::default());
-        });
 
-        // --- Global Drag and Drop ---
-        ctx.input(|i| {
-            if !i.raw.dropped_files.is_empty() {
-                let mut iter = i.raw.dropped_files.clone().into_iter();
-                if let Some(f1) = iter.next() {
-                    if let Some(path) = f1.path {
-                        self.load_image_to_texture(ctx, path, true);
-                    }
-                }
-                if let Some(f2) = iter.next() {
-                    if let Some(path) = f2.path {
-                        self.load_image_to_texture(ctx, path, false);
-                    }
-                }
-            }
-        });
+        // ── Header ───────────────────────────────────────────────────────────
+        egui::TopBottomPanel::top("header")
+            .exact_height(52.0)
+            .frame(egui::Frame::NONE.fill(BG_SURFACE).stroke(Stroke::new(1.0, BORDER)))
+            .show(ctx, |ui| {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.add_space(16.0);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if let Some(msg) = &self.error_msg {
-                ui.colored_label(egui::Color32::RED, msg);
-            }
+                    // Logo
+                    ui.label(RichText::new(icon_str(Icon::Aperture)).size(20.0).color(ACCENT)
+                        .font(FontId::new(20.0, FontFamily::Name("lucide".into()))));
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("IDIFFER").size(13.0).color(TEXT).strong());
+                    ui.add_space(16.0);
 
-            if let (Some(tex_left), Some(tex_right)) = (&self.texture_left, &self.texture_right) {
-                match self.diff_mode {
-                    DiffMode::Slider => {
-                        let available_size = ui.available_size();
-                        let (rect, response) =
-                            ui.allocate_exact_size(available_size, egui::Sense::drag());
+                    // Divider
+                    let (dvr, _) = ui.allocate_exact_size(egui::vec2(1.0, 28.0), egui::Sense::hover());
+                    ui.painter().rect_filled(dvr, 0.0, BORDER);
+                    ui.add_space(16.0);
 
-                        // Draw Left Image
-                        ui.painter().image(
-                            tex_left.id(),
-                            rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
+                    // Slots
+                    self.render_slot_header(ui, true, "Original", ctx);
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(icon_str(Icon::ArrowLeftRight)).size(14.0).color(TEXT_DIM)
+                        .font(FontId::new(14.0, FontFamily::Name("lucide".into()))));
+                    ui.add_space(8.0);
+                    self.render_slot_header(ui, false, "New", ctx);
 
-                        // Draw Right Image Clipped
-                        let swipe_x = rect.left() + rect.width() * self.slider_pos;
-                        let clipped_rect = egui::Rect::from_min_max(
-                            egui::pos2(swipe_x, rect.top()),
-                            egui::pos2(rect.right(), rect.bottom()),
-                        );
-                        let painter = ui.painter_at(clipped_rect);
-                        painter.image(
-                            tex_right.id(),
-                            rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
+                    // Right side actions
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(16.0);
 
-                        // Slider Grip logic... (omitted for brevity, keeping existing slider logic)
-                        let line_stroke = egui::Stroke::new(2.0, egui::Color32::WHITE);
-                        ui.painter().line_segment(
-                            [
-                                egui::pos2(swipe_x, rect.top()),
-                                egui::pos2(swipe_x, rect.bottom()),
-                            ],
-                            line_stroke,
-                        );
-
-                        let handle_pos = egui::pos2(swipe_x, rect.center().y);
-                        ui.painter().circle(
-                            handle_pos,
-                            18.0,
-                            egui::Color32::from_black_alpha(180),
-                            egui::Stroke::new(2.0, egui::Color32::WHITE),
-                        );
-                        ui.painter().text(
-                            handle_pos,
-                            egui::Align2::CENTER_CENTER,
-                            icon_text(Icon::ChevronsLeftRight, 16.0).text(),
-                            egui::FontId::new(16.0, FontFamily::Name("lucide".into())),
-                            egui::Color32::WHITE,
-                        );
-
-                        if response.dragged() {
-                            if let Some(pointer_pos) = ctx.input(|i| i.pointer.latest_pos()) {
-                                let rel_x = pointer_pos.x - rect.left();
-                                self.slider_pos = (rel_x / rect.width()).clamp(0.0, 1.0);
+                        // Open Pair
+                        let pair_btn = egui::Button::new(
+                            RichText::new(format!("{} Open Pair", icon_str(Icon::FolderOpen))).size(12.0).color(BG_DEEP)
+                        )
+                        .fill(ACCENT)
+                        .corner_radius(egui::CornerRadius::same(6u8))
+                        .stroke(Stroke::NONE);
+                        if ui.add(pair_btn).clicked() {
+                            if let Some(paths) = rfd::FileDialog::new()
+                                .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp", "gif"])
+                                .pick_files()
+                            {
+                                let mut iter = paths.into_iter();
+                                if let Some(p) = iter.next() { self.load_image_to_texture(ctx, p, true); }
+                                if let Some(p) = iter.next() { self.load_image_to_texture(ctx, p, false); }
                             }
                         }
-                    }
-                    DiffMode::SideBySide => {
-                        ui.columns(2, |columns| {
-                            let size = columns[0].available_size();
-                            columns[0].vertical_centered(|ui| {
-                                ui.label(RichText::new("Original").strong());
-                                ui.add(egui::Image::from_texture(tex_left).fit_to_exact_size(size));
-                            });
-                            columns[1].vertical_centered(|ui| {
-                                ui.label(RichText::new("New").strong());
-                                ui.add(
-                                    egui::Image::from_texture(tex_right).fit_to_exact_size(size),
-                                );
-                            });
-                        });
-                    }
-                    DiffMode::Difference => {
-                        self.generate_diff_texture(ctx);
-                        if let Some(tex_diff) = &self.texture_diff {
-                            let available_size = ui.available_size();
-                            ui.centered_and_justified(|ui| {
-                                ui.add(
-                                    egui::Image::from_texture(tex_diff)
-                                        .fit_to_exact_size(available_size),
-                                );
-                            });
-                        } else {
-                            ui.centered_and_justified(|ui| {
-                                ui.label("Calculating difference...");
-                            });
-                        }
-                    }
-                    DiffMode::Fade => {
-                        let available_size = ui.available_size();
-                        let (rect, _response) =
-                            ui.allocate_exact_size(available_size, egui::Sense::hover());
 
-                        ui.painter().image(
-                            tex_left.id(),
-                            rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
-                        ui.painter().image(
-                            tex_right.id(),
-                            rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE.gamma_multiply(self.fade_opacity),
-                        );
-
-                        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                            ui.add_space(10.0);
-                            ui.add(
-                                egui::Slider::new(&mut self.fade_opacity, 0.0..=1.0)
-                                    .text("Fade Opacity"),
-                            );
-                        });
-                    }
-                }
-            } else if let Some(path) = self.path_left.clone().or(self.path_right.clone()) {
-                // One image is loaded. Is it in Git?
-                if self.is_in_git_repo(&path) {
-                    ui.centered_and_justified(|ui| {
-                        ui.vertical_centered(|ui| {
-                            let history_icon = icon_text(Icon::History, 32.0)
-                                .color(ui.visuals().selection.bg_fill);
-                            ui.label(history_icon);
+                        // Clear
+                        if has_one {
                             ui.add_space(8.0);
-                            Label::new("Compare with History")
-                                .size(ControlSize::Lg)
-                                .show(ui, &self.theme);
-                            ui.add_space(4.0);
-                            Label::new("Found this image in a Git repository.")
-                                .size(ControlSize::Sm)
-                                .show(ui, &self.theme);
+                            let clr_btn = egui::Button::new(RichText::new("Clear").size(12.0).color(TEXT_MUTED))
+                                .fill(Color32::TRANSPARENT)
+                                .corner_radius(egui::CornerRadius::same(6u8))
+                                .stroke(Stroke::new(1.0, BORDER));
+                            if ui.add(clr_btn).clicked() { self.clear_all(); }
+                        }
 
-                            ui.add_space(24.0);
+                        // Error
+                        if let Some(ref msg) = self.error_msg.clone() {
+                            ui.add_space(8.0);
+                            ui.label(RichText::new(format!("{} {}", icon_str(Icon::CircleAlert), msg))
+                                .size(11.0).color(DANGER));
+                        }
+                    });
+                });
+            });
 
-                            // Load commits if not already loaded
-                            let commits = if self.path_left.is_some() {
-                                if self.commits_left.is_empty() {
-                                    self.commits_left = self.get_git_history(&path);
-                                }
-                                &self.commits_left
+        // ── Mode Toolbar (only when both images loaded) ───────────────────────
+        if has_both {
+            egui::TopBottomPanel::top("mode_toolbar")
+                .exact_height(40.0)
+                .frame(egui::Frame::NONE.fill(BG_DEEP).stroke(Stroke::new(1.0, BORDER)))
+                .show(ctx, |ui| {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add_space(16.0);
+
+                        let modes = [
+                            (DiffMode::Slider, Icon::Split, "Slider"),
+                            (DiffMode::SideBySide, Icon::Columns2, "Side by Side"),
+                            (DiffMode::Difference, Icon::Diff, "Difference"),
+                            (DiffMode::Fade, Icon::Blend, "Fade"),
+                        ];
+
+                        for (mode, icon, label) in modes {
+                            let active = self.diff_mode == mode;
+                            let (fill, color, stroke) = if active {
+                                (ACCENT.gamma_multiply(0.12), ACCENT, Stroke::new(1.0, ACCENT.gamma_multiply(0.35)))
                             } else {
-                                if self.commits_right.is_empty() {
-                                    self.commits_right = self.get_git_history(&path);
-                                }
-                                &self.commits_right
+                                (Color32::TRANSPARENT, TEXT_MUTED, Stroke::NONE)
+                            };
+                            let tab_label = format!("{} {}", icon_str(icon), label);
+                            let resp = ui.add(
+                                egui::Button::new(RichText::new(tab_label).size(12.0).color(color))
+                                    .fill(fill)
+                                    .stroke(stroke)
+                                    .corner_radius(egui::CornerRadius::same(6u8))
+                            );
+                            if resp.clicked() { self.diff_mode = mode; }
+                            ui.add_space(2.0);
+                        }
+
+                        // Inline Fade slider
+                        if self.diff_mode == DiffMode::Fade {
+                            ui.add_space(16.0);
+                            let (sep, _) = ui.allocate_exact_size(egui::vec2(1.0, 20.0), egui::Sense::hover());
+                            ui.painter().rect_filled(sep, 0.0, BORDER);
+                            ui.add_space(12.0);
+                            ui.label(RichText::new("Opacity").size(11.0).color(TEXT_MUTED));
+                            ui.add_space(6.0);
+                            ui.add(egui::Slider::new(&mut self.fade_opacity, 0.0..=1.0).show_value(false));
+                        }
+
+                        // Diff % badge in toolbar when Difference mode
+                        if self.diff_mode == DiffMode::Difference {
+                            if let Some(pct) = self.diff_pixel_pct {
+                                ui.add_space(16.0);
+                                let (sep, _) = ui.allocate_exact_size(egui::vec2(1.0, 20.0), egui::Sense::hover());
+                                ui.painter().rect_filled(sep, 0.0, BORDER);
+                                ui.add_space(12.0);
+                                let color = if pct < 1.0 { SUCCESS } else { DANGER };
+                                ui.label(RichText::new(format!("{:.2}% changed", pct)).size(11.0).color(color).monospace());
                             }
-                            .clone();
+                        }
+                    });
+                });
+        }
 
-                            if commits.is_empty() {
-                                ui.label("No git history found for this file.");
+        // ── Central Panel ─────────────────────────────────────────────────────
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(BG_DEEP))
+            .show(ctx, |ui| {
+                if has_both {
+                    // Clone handles up front to avoid borrow conflicts
+                    let tex_left = self.texture_left.as_ref().unwrap().clone();
+                    let tex_right = self.texture_right.as_ref().unwrap().clone();
+
+                    match self.diff_mode {
+                        DiffMode::Slider => {
+                            let avail = ui.available_size();
+                            let (rect, resp) = ui.allocate_exact_size(avail, egui::Sense::drag());
+                            let p = ui.painter();
+
+                            // Left image full
+                            p.image(tex_left.id(), rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                Color32::WHITE);
+
+                            // Right image clipped
+                            let sx = rect.left() + rect.width() * self.slider_pos;
+                            let clip = egui::Rect::from_min_max(
+                                egui::pos2(sx, rect.top()), egui::pos2(rect.right(), rect.bottom()));
+                            ui.painter_at(clip).image(tex_right.id(), rect,
+                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                Color32::WHITE);
+
+                            let p = ui.painter();
+
+                            // Corner labels
+                            let lbg = Color32::from_black_alpha(160);
+                            let pad = egui::vec2(8.0, 4.0);
+                            let lbl_y = rect.top() + 12.0;
+                            // ORIGINAL
+                            let orig_r = egui::Rect::from_min_size(
+                                egui::pos2(rect.left() + 12.0, lbl_y), egui::vec2(68.0, 18.0));
+                            p.rect_filled(orig_r, 4.0, lbg);
+                            p.text(orig_r.center(), egui::Align2::CENTER_CENTER, "ORIGINAL",
+                                egui::FontId::monospace(10.0), TEXT_MUTED);
+                            // NEW
+                            let new_r = egui::Rect::from_min_size(
+                                egui::pos2(rect.right() - 44.0, lbl_y), egui::vec2(36.0, 18.0));
+                            p.rect_filled(new_r, 4.0, lbg);
+                            p.text(new_r.center(), egui::Align2::CENTER_CENTER, "NEW",
+                                egui::FontId::monospace(10.0), ACCENT);
+
+                            // Glowing divider line
+                            for glow in [6u8, 4, 2] {
+                                let w = glow as f32 * 0.8;
+                                p.line_segment(
+                                    [egui::pos2(sx, rect.top()), egui::pos2(sx, rect.bottom())],
+                                    Stroke::new(w, Color32::from_rgba_unmultiplied(0x06, 0xb6, 0xd4, glow * 18)));
+                            }
+                            p.line_segment(
+                                [egui::pos2(sx, rect.top()), egui::pos2(sx, rect.bottom())],
+                                Stroke::new(1.5, ACCENT));
+
+                            // Handle
+                            let hc = egui::pos2(sx, rect.center().y);
+                            p.circle_stroke(hc, 26.0, Stroke::new(1.0, ACCENT.gamma_multiply(0.2)));
+                            p.circle_filled(hc, 20.0, BG_SURFACE);
+                            p.circle_stroke(hc, 20.0, Stroke::new(1.5, ACCENT));
+                            p.text(hc, egui::Align2::CENTER_CENTER,
+                                icon_str(Icon::ChevronsLeftRight),
+                                FontId::new(16.0, FontFamily::Name("lucide".into())), ACCENT);
+
+                            // Drag
+                            if resp.dragged() {
+                                if let Some(ptr) = ctx.input(|i| i.pointer.latest_pos()) {
+                                    self.slider_pos = ((ptr.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+                                }
+                            }
+                            if ui.rect_contains_pointer(egui::Rect::from_center_size(hc, egui::vec2(48.0, 48.0))) {
+                                ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeHorizontal);
+                            }
+                        }
+
+                        DiffMode::SideBySide => {
+                            let avail = ui.available_size();
+                            let half = (avail.x * 0.5).floor();
+
+                            let left_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(half, avail.y));
+                            let right_rect = egui::Rect::from_min_size(
+                                egui::pos2(left_rect.right() + 1.0, left_rect.top()),
+                                egui::vec2(avail.x - half - 1.0, avail.y));
+
+                            let (_, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
+                            let p = ui.painter();
+
+                            let disp_l = fit_in_rect(tex_left.size_vec2(), left_rect);
+                            let disp_r = fit_in_rect(tex_right.size_vec2(), right_rect);
+
+                            // Checkerboard bg (simple solid for now)
+                            p.rect_filled(left_rect, 0.0, BG_DEEP);
+                            p.rect_filled(right_rect, 0.0, BG_DEEP);
+
+                            p.image(tex_left.id(), disp_l,
+                                egui::Rect::from_min_max(egui::pos2(0.0,0.0), egui::pos2(1.0,1.0)), Color32::WHITE);
+                            p.image(tex_right.id(), disp_r,
+                                egui::Rect::from_min_max(egui::pos2(0.0,0.0), egui::pos2(1.0,1.0)), Color32::WHITE);
+
+                            // Center divider
+                            p.rect_filled(
+                                egui::Rect::from_min_size(egui::pos2(left_rect.right(), left_rect.top()), egui::vec2(1.0, avail.y)),
+                                0.0, BORDER);
+
+                            // Corner labels
+                            let lbg = Color32::from_black_alpha(180);
+                            let ly = left_rect.top() + 10.0;
+                            let orig_r = egui::Rect::from_min_size(egui::pos2(left_rect.left()+10.0, ly), egui::vec2(68.0, 18.0));
+                            p.rect_filled(orig_r, 4.0, lbg);
+                            p.text(orig_r.center(), egui::Align2::CENTER_CENTER, "ORIGINAL", egui::FontId::monospace(10.0), TEXT_MUTED);
+
+                            let new_r = egui::Rect::from_min_size(egui::pos2(right_rect.left()+10.0, ly), egui::vec2(36.0, 18.0));
+                            p.rect_filled(new_r, 4.0, lbg);
+                            p.text(new_r.center(), egui::Align2::CENTER_CENTER, "NEW", egui::FontId::monospace(10.0), ACCENT);
+                        }
+
+                        DiffMode::Difference => {
+                            self.generate_diff_texture(ctx);
+                            let avail = ui.available_size();
+                            let pos = ui.cursor().min;
+                            let (_, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
+                            let p = ui.painter();
+
+                            if let Some(ref tex_diff) = self.texture_diff {
+                                let container = egui::Rect::from_min_size(pos, avail);
+                                let disp = fit_in_rect(tex_diff.size_vec2(), container);
+                                p.image(tex_diff.id(), disp,
+                                    egui::Rect::from_min_max(egui::pos2(0.0,0.0), egui::pos2(1.0,1.0)), Color32::WHITE);
                             } else {
-                                egui::Frame::NONE
-                                    .fill(ui.visuals().window_fill)
-                                    .corner_radius(12.0)
-                                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
-                                    .inner_margin(egui::Margin::same(1)) // For precise border
-                                    .show(ui, |ui| {
-                                        ui.set_width(500.0);
-                                        egui::ScrollArea::vertical().max_height(400.0).show(
-                                            ui,
-                                            |ui| {
-                                                ui.add_space(8.0);
-                                                for (i, commit) in commits.into_iter().enumerate() {
+                                p.text(egui::Rect::from_min_size(pos, avail).center(),
+                                    egui::Align2::CENTER_CENTER, "Computing diff…",
+                                    egui::FontId::monospace(12.0), TEXT_MUTED);
+                            }
+                        }
+
+                        DiffMode::Fade => {
+                            let avail = ui.available_size();
+                            let pos = ui.cursor().min;
+                            let container = egui::Rect::from_min_size(pos, avail);
+                            let (_, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
+                            let p = ui.painter();
+                            let disp = fit_in_rect(tex_left.size_vec2(), container);
+                            p.image(tex_left.id(), disp,
+                                egui::Rect::from_min_max(egui::pos2(0.0,0.0), egui::pos2(1.0,1.0)), Color32::WHITE);
+                            p.image(tex_right.id(), disp,
+                                egui::Rect::from_min_max(egui::pos2(0.0,0.0), egui::pos2(1.0,1.0)),
+                                Color32::WHITE.gamma_multiply(self.fade_opacity));
+                        }
+                    }
+                } else if let Some(path) = self.path_left.clone().or(self.path_right.clone()) {
+                    // One image loaded
+                    if self.is_in_git_repo(&path) {
+                        // Git history browser
+                        ui.centered_and_justified(|ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(40.0);
+                                ui.label(icon_text(Icon::GitBranch, 40.0).color(ACCENT));
+                                ui.add_space(16.0);
+                                ui.label(RichText::new("Compare with Git History").size(18.0).color(TEXT).strong());
+                                ui.add_space(6.0);
+                                ui.label(RichText::new("Select a revision to load alongside your image.").size(13.0).color(TEXT_MUTED));
+                                ui.add_space(24.0);
+
+                                let commits = if self.path_left.is_some() {
+                                    if self.commits_left.is_empty() {
+                                        self.commits_left = self.get_git_history(&path);
+                                    }
+                                    self.commits_left.clone()
+                                } else {
+                                    if self.commits_right.is_empty() {
+                                        self.commits_right = self.get_git_history(&path);
+                                    }
+                                    self.commits_right.clone()
+                                };
+
+                                if commits.is_empty() {
+                                    ui.label(RichText::new("No commits found for this file.").size(12.0).color(TEXT_MUTED));
+                                } else {
+                                    egui::Frame::NONE
+                                        .fill(BG_CARD)
+                                        .corner_radius(egui::CornerRadius::same(10))
+                                        .stroke(Stroke::new(1.0, BORDER))
+                                        .inner_margin(egui::Margin::same(8))
+                                        .show(ui, |ui| {
+                                            ui.set_width(560.0);
+                                            egui::ScrollArea::vertical().max_height(380.0).show(ui, |ui| {
+                                                for (i, commit) in commits.iter().enumerate() {
                                                     if i > 0 {
-                                                        ui.add_space(2.0);
-                                                        ui.separator();
-                                                        ui.add_space(2.0);
+                                                        ui.add(egui::Separator::default().spacing(0.0));
                                                     }
-
-                                                    let response = ui
-                                                        .horizontal(|ui| {
-                                                            ui.set_min_height(40.0);
+                                                    let row_resp = ui.horizontal(|ui| {
+                                                        ui.set_min_height(40.0);
+                                                        ui.add_space(8.0);
+                                                        ui.label(RichText::new(&commit.hash).monospace().size(12.0).color(ACCENT));
+                                                        ui.add_space(10.0);
+                                                        let msg = if commit.message.len() > 48 {
+                                                            format!("{}…", &commit.message[..46])
+                                                        } else { commit.message.clone() };
+                                                        ui.label(RichText::new(msg).size(13.0).color(TEXT));
+                                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                                             ui.add_space(8.0);
-
-                                                            // Hash column
-                                                            ui.colored_label(
-                                                                ui.visuals().selection.bg_fill,
-                                                                RichText::new(commit.hash.clone())
-                                                                    .monospace()
-                                                                    .strong(),
-                                                            );
-                                                            ui.add_space(8.0);
-
-                                                            // Message (expanding)
-                                                            let message =
-                                                                if commit.message.len() > 40 {
-                                                                    format!(
-                                                                        "{}...",
-                                                                        &commit.message[..37]
-                                                                    )
-                                                                } else {
-                                                                    commit.message.clone()
-                                                                };
-                                                            ui.label(
-                                                                RichText::new(message).size(14.0),
-                                                            );
-
-                                                            ui.with_layout(
-                                                                egui::Layout::right_to_left(
-                                                                    egui::Align::Center,
-                                                                ),
-                                                                |ui| {
-                                                                    ui.add_space(8.0);
-                                                                    ui.colored_label(
-                                                                        ui.visuals()
-                                                                            .weak_text_color(),
-                                                                        RichText::new(commit.date)
-                                                                            .size(12.0),
-                                                                    );
-                                                                },
-                                                            );
-                                                        })
-                                                        .response;
-
-                                                    let rect = response.rect;
-                                                    let is_hovered = ui.rect_contains_pointer(rect);
-
-                                                    if is_hovered {
-                                                        ui.painter().rect_filled(
-                                                            rect,
-                                                            4.0,
-                                                            ui.visuals()
-                                                                .widgets
-                                                                .hovered
-                                                                .bg_fill
-                                                                .gamma_multiply(0.3),
-                                                        );
-                                                        ui.output_mut(|o| {
-                                                            o.cursor_icon =
-                                                                egui::CursorIcon::PointingHand
+                                                            ui.label(RichText::new(&commit.date).size(11.0).color(TEXT_MUTED).monospace());
                                                         });
-                                                    }
+                                                    });
 
-                                                    // Make entire row clickable
-                                                    let click_area = ui.interact(
-                                                        rect,
-                                                        ui.id().with(i),
-                                                        egui::Sense::click(),
-                                                    );
-                                                    if click_area.clicked() {
-                                                        let is_left_empty =
-                                                            self.texture_left.is_none();
-                                                        self.load_from_git(
-                                                            ctx,
-                                                            &path,
-                                                            &commit.hash,
-                                                            is_left_empty,
-                                                        );
+                                                    let r = row_resp.response.rect;
+                                                    let hovered = ui.rect_contains_pointer(r);
+                                                    if hovered {
+                                                        ui.painter().rect_filled(r, 6.0, ACCENT.gamma_multiply(0.08));
+                                                        ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+                                                    }
+                                                    if ui.interact(r, ui.id().with(i), egui::Sense::click()).clicked() {
+                                                        let is_left_empty = self.texture_left.is_none();
+                                                        self.load_from_git(ctx, &path, &commit.hash, is_left_empty);
                                                     }
                                                 }
-                                                ui.add_space(8.0);
-                                            },
-                                        );
-                                    });
-                            }
-
-                            ui.add_space(24.0);
-
-                            if button(
-                                ui,
-                                &self.theme,
-                                "Select local image instead",
-                                ControlVariant::Ghost,
-                                ControlSize::Sm,
-                                true,
-                            )
-                            .clicked()
-                            {
-                                if let Some(p) = rfd::FileDialog::new().pick_file() {
-                                    let is_left_empty = self.texture_left.is_none();
-                                    self.load_image_to_texture(ctx, p, is_left_empty);
+                                            });
+                                        });
                                 }
-                            }
+
+                                ui.add_space(20.0);
+                                let local_btn = egui::Button::new(
+                                    RichText::new(format!("{} Browse local file instead", icon_str(Icon::FolderOpen))).size(12.0).color(TEXT_MUTED)
+                                ).fill(Color32::TRANSPARENT).stroke(Stroke::new(1.0, BORDER))
+                                .corner_radius(egui::CornerRadius::same(6u8));
+                                if ui.add(local_btn).clicked() {
+                                    if let Some(p) = rfd::FileDialog::new()
+                                        .add_filter("Images", &["png","jpg","jpeg","webp","bmp","gif"])
+                                        .pick_file()
+                                    {
+                                        let is_left_empty = self.texture_left.is_none();
+                                        self.load_image_to_texture(ctx, p, is_left_empty);
+                                    }
+                                }
+                            });
                         });
-                    });
+                    } else {
+                        // Non-git: show "load second" state
+                        ui.centered_and_justified(|ui| {
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(40.0);
+                                ui.label(icon_text(Icon::ImagePlus, 40.0).color(ACCENT));
+                                ui.add_space(16.0);
+                                ui.label(RichText::new("Load the Second Image").size(18.0).color(TEXT).strong());
+                                ui.add_space(6.0);
+                                ui.label(RichText::new("One image is loaded. Add another to start comparing.").size(13.0).color(TEXT_MUTED));
+                                ui.add_space(28.0);
+                                let l = self.texture_left.is_some();
+                                let r = self.texture_right.is_some();
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 16.0;
+                                    // Slot 1
+                                    let (s1_fill, s1_text, s1_label) = if l {
+                                        (SUCCESS.gamma_multiply(0.12), SUCCESS, format!("{} Original  ✓", icon_str(Icon::Image)))
+                                    } else {
+                                        (Color32::TRANSPARENT, TEXT_MUTED, format!("{} Load Original", icon_str(Icon::Image)))
+                                    };
+                                    let b1 = egui::Button::new(RichText::new(s1_label).size(13.0).color(s1_text))
+                                        .fill(s1_fill)
+                                        .stroke(Stroke::new(1.0, if l { SUCCESS.gamma_multiply(0.4) } else { BORDER }))
+                                        .corner_radius(egui::CornerRadius::same(8u8))
+                                        .min_size(egui::vec2(160.0, 44.0));
+                                    if ui.add(b1).clicked() && !l {
+                                        if let Some(p) = rfd::FileDialog::new().add_filter("Images", &["png","jpg","jpeg","webp","bmp"]).pick_file() {
+                                            self.load_image_to_texture(ctx, p, true);
+                                        }
+                                    }
+                                    // Slot 2
+                                    let (s2_fill, s2_text, s2_label) = if r {
+                                        (SUCCESS.gamma_multiply(0.12), SUCCESS, format!("{} New  ✓", icon_str(Icon::Image)))
+                                    } else {
+                                        (ACCENT.gamma_multiply(0.1), ACCENT, format!("{} Load New", icon_str(Icon::ImagePlus)))
+                                    };
+                                    let b2 = egui::Button::new(RichText::new(s2_label).size(13.0).color(s2_text))
+                                        .fill(s2_fill)
+                                        .stroke(Stroke::new(1.0, if r { SUCCESS.gamma_multiply(0.4) } else { ACCENT.gamma_multiply(0.4) }))
+                                        .corner_radius(egui::CornerRadius::same(8u8))
+                                        .min_size(egui::vec2(160.0, 44.0));
+                                    if ui.add(b2).clicked() && !r {
+                                        if let Some(p) = rfd::FileDialog::new().add_filter("Images", &["png","jpg","jpeg","webp","bmp"]).pick_file() {
+                                            self.load_image_to_texture(ctx, p, false);
+                                        }
+                                    }
+                                });
+                            });
+                        });
+                    }
                 } else {
+                    // ── Empty State ─────────────────────────────────────────
+                    let avail = ui.available_size();
                     ui.centered_and_justified(|ui| {
                         ui.vertical_centered(|ui| {
-                            let image_icon = icon_text(Icon::ImagePlus, 32.0)
-                                .color(ui.visuals().selection.bg_fill);
-                            ui.label(image_icon);
-                            ui.add_space(8.0);
-                            Label::new("Ready to Compare")
-                                .size(ControlSize::Lg)
-                                .show(ui, &self.theme);
-                            ui.add_space(4.0);
-                            Label::new("Load the second image to start.").show(ui, &self.theme);
-
                             ui.add_space(32.0);
+                            ui.label(icon_text(Icon::Layers, 48.0).color(ACCENT));
+                            ui.add_space(20.0);
+                            ui.label(RichText::new("Drop images to compare").size(22.0).color(TEXT).strong());
+                            ui.add_space(8.0);
+                            ui.label(RichText::new("Or choose files below — supports PNG, JPG, WebP, BMP").size(13.0).color(TEXT_MUTED));
+                            ui.add_space(40.0);
 
                             ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 24.0;
-                                let left_loaded = self.texture_left.is_some();
-                                let right_loaded = self.texture_right.is_some();
+                                ui.spacing_mut().item_spacing.x = 20.0;
+                                let card_size = egui::vec2(280.0, 200.0);
 
-                                if button(
-                                    ui,
-                                    &self.theme,
-                                    if left_loaded {
-                                        "Slot 1: Loaded ✓"
-                                    } else {
-                                        "Select Image 1"
-                                    },
-                                    if left_loaded {
-                                        ControlVariant::Secondary
-                                    } else {
-                                        ControlVariant::Primary
-                                    },
-                                    ControlSize::Lg,
-                                    true,
-                                )
-                                .clicked()
-                                {
-                                    if let Some(p) = rfd::FileDialog::new().pick_file() {
-                                        self.load_image_to_texture(ctx, p, true);
-                                    }
-                                }
-
-                                if button(
-                                    ui,
-                                    &self.theme,
-                                    if right_loaded {
-                                        "Slot 2: Loaded ✓"
-                                    } else {
-                                        "Select Image 2"
-                                    },
-                                    if right_loaded {
-                                        ControlVariant::Secondary
-                                    } else {
-                                        ControlVariant::Primary
-                                    },
-                                    ControlSize::Lg,
-                                    true,
-                                )
-                                .clicked()
-                                {
-                                    if let Some(p) = rfd::FileDialog::new().pick_file() {
-                                        self.load_image_to_texture(ctx, p, false);
-                                    }
+                                for (is_left, slot_label, icon) in [
+                                    (true, "Original", Icon::Image),
+                                    (false, "New", Icon::ImagePlus),
+                                ] {
+                                    egui::Frame::NONE
+                                        .fill(BG_CARD)
+                                        .corner_radius(egui::CornerRadius::same(12))
+                                        .stroke(Stroke::new(1.0, BORDER))
+                                        .inner_margin(egui::Margin::same(24))
+                                        .show(ui, |ui| {
+                                            ui.set_min_size(card_size);
+                                            ui.vertical_centered(|ui| {
+                                                ui.add_space(24.0);
+                                                ui.label(icon_text(icon, 36.0).color(TEXT_DIM));
+                                                ui.add_space(16.0);
+                                                ui.label(RichText::new(slot_label).size(14.0).color(TEXT).strong());
+                                                ui.add_space(4.0);
+                                                ui.label(RichText::new("image").size(12.0).color(TEXT_MUTED));
+                                                ui.add_space(20.0);
+                                                let browse_btn = egui::Button::new(
+                                                    RichText::new("Browse File").size(12.0).color(TEXT)
+                                                )
+                                                .fill(BG_ELEVATED)
+                                                .stroke(Stroke::new(1.0, BORDER))
+                                                .corner_radius(egui::CornerRadius::same(6u8))
+                                                .min_size(egui::vec2(120.0, 32.0));
+                                                if ui.add(browse_btn).clicked() {
+                                                    if let Some(p) = rfd::FileDialog::new()
+                                                        .add_filter("Images", &["png","jpg","jpeg","webp","bmp","gif"])
+                                                        .pick_file()
+                                                    {
+                                                        self.load_image_to_texture(ctx, p, is_left);
+                                                    }
+                                                }
+                                            });
+                                        });
                                 }
                             });
                         });
                     });
                 }
-            } else {
-                // Mode Switcher Empty State (Diffchecker style)
-                ui.centered_and_justified(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 24.0;
-
-                        let card_width = 400.0;
-                        let card_height = 300.0;
-
-                        // Original Card
-                        egui::Frame::NONE
-                            .fill(ui.visuals().faint_bg_color)
-                            .corner_radius(12.0)
-                            .stroke(egui::Stroke::new(
-                                2.0,
-                                ui.visuals().widgets.noninteractive.bg_stroke.color,
-                            ))
-                            .show(ui, |ui| {
-                                ui.set_min_size(egui::vec2(card_width, card_height));
-                                ui.centered_and_justified(|ui| {
-                                    ui.vertical_centered(|ui| {
-                                        ui.add_space(80.0);
-                                        ui.label(icon_text(Icon::Image, 48.0));
-                                        ui.add_space(20.0);
-                                        Label::new("Original Image")
-                                            .size(ControlSize::Lg)
-                                            .show(ui, &self.theme);
-                                        ui.add_space(10.0);
-                                        if button(
-                                            ui,
-                                            &self.theme,
-                                            "Browse File",
-                                            ControlVariant::Outline,
-                                            ControlSize::Sm,
-                                            true,
-                                        )
-                                        .clicked()
-                                        {
-                                            if let Some(p) = rfd::FileDialog::new().pick_file() {
-                                                self.load_image_to_texture(ctx, p, true);
-                                            }
-                                        }
-                                    });
-                                });
-                            });
-
-                        // New Card
-                        egui::Frame::NONE
-                            .fill(ui.visuals().faint_bg_color)
-                            .corner_radius(12.0)
-                            .stroke(egui::Stroke::new(
-                                2.0,
-                                ui.visuals().widgets.noninteractive.bg_stroke.color,
-                            ))
-                            .show(ui, |ui| {
-                                ui.set_min_size(egui::vec2(card_width, card_height));
-                                ui.centered_and_justified(|ui| {
-                                    ui.vertical_centered(|ui| {
-                                        ui.add_space(80.0);
-                                        ui.label(icon_text(Icon::ImagePlus, 48.0));
-                                        ui.add_space(20.0);
-                                        Label::new("New Image")
-                                            .size(ControlSize::Lg)
-                                            .show(ui, &self.theme);
-                                        ui.add_space(10.0);
-                                        if button(
-                                            ui,
-                                            &self.theme,
-                                            "Browse File",
-                                            ControlVariant::Outline,
-                                            ControlSize::Sm,
-                                            true,
-                                        )
-                                        .clicked()
-                                        {
-                                            if let Some(p) = rfd::FileDialog::new().pick_file() {
-                                                self.load_image_to_texture(ctx, p, false);
-                                            }
-                                        }
-                                    });
-                                });
-                            });
-                    });
-                });
-            }
-        });
-
-        egui::TopBottomPanel::bottom("footer").show(ctx, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
-                ui.label(RichText::new("IMAGE DIFFER").size(10.0).weak());
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(8.0);
-                    // Dummy zoom - could be implemented with a state scale f32
-                    ui.add_space(4.0);
-                    ui.label("100%");
-                    ui.add_space(4.0);
-                    ui.label(icon_text(Icon::Search, 12.0));
-                });
             });
-            ui.add_space(4.0);
-        });
     }
 }
