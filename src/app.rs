@@ -24,6 +24,8 @@ pub struct ImageDifferApp {
     pub(crate) git_context: Option<GitContext>,
     pub(crate) pending_left: Option<PathBuf>,
     pub(crate) pending_right: Option<PathBuf>,
+    pub(crate) zoom_level: f32,
+    pub(crate) pan_offset: egui::Vec2,
 }
 
 impl ImageDifferApp {
@@ -46,6 +48,8 @@ impl ImageDifferApp {
             git_context: cfg.git_context,
             pending_left: cfg.left_path,
             pending_right: cfg.right_path,
+            zoom_level: 0.0,
+            pan_offset: egui::Vec2::ZERO,
         }
     }
 
@@ -206,5 +210,7 @@ impl ImageDifferApp {
         self.error_msg = None;
         self.commits_left.clear();
         self.commits_right.clear();
+        self.zoom_level = 0.0;
+        self.pan_offset = egui::Vec2::ZERO;
     }
 }

@@ -5,7 +5,7 @@ use lucide_icons::Icon;
 use crate::app::ImageDifferApp;
 use crate::theme::{
     ACCENT, BG_CARD, BG_DEEP, BG_ELEVATED, BG_SURFACE, BORDER, DANGER, SUCCESS, TEXT, TEXT_DIM,
-    TEXT_MUTED, fit_in_rect, icon_str, icon_text,
+    TEXT_MUTED, calc_image_rect, icon_str, icon_text,
 };
 use crate::types::DiffMode;
 
@@ -238,6 +238,41 @@ impl eframe::App for ImageDifferApp {
                                 .monospace(),
                         );
                     }
+                    if has_both || has_one {
+                        ui.add_space(16.0);
+                        ui.label(icon_text(Icon::ZoomIn, 12.0).color(TEXT_DIM));
+                        let ztxt = if self.zoom_level <= 0.0 {
+                            "Fit".to_string()
+                        } else {
+                            format!("{:.0}%", self.zoom_level * 100.0)
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("1:1").size(10.0).color(TEXT))
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(Stroke::NONE),
+                            )
+                            .clicked()
+                        {
+                            self.zoom_level = 1.0;
+                            self.pan_offset = egui::Vec2::ZERO;
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("Fit").size(10.0).color(TEXT))
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(Stroke::NONE),
+                            )
+                            .clicked()
+                        {
+                            self.zoom_level = 0.0;
+                            self.pan_offset = egui::Vec2::ZERO;
+                        }
+                        ui.add(
+                            egui::Slider::new(&mut self.zoom_level, 0.0..=5.0).show_value(false),
+                        );
+                        ui.label(RichText::new(ztxt).size(10.0).color(TEXT_DIM).monospace());
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
                         ui.label(RichText::new("IDIFFER").size(9.0).color(TEXT_DIM).strong());
@@ -269,10 +304,8 @@ impl eframe::App for ImageDifferApp {
 
                     // Logo
                     ui.label(
-                        RichText::new(icon_str(Icon::Aperture))
-                            .size(20.0)
-                            .color(ACCENT)
-                            .font(FontId::new(20.0, FontFamily::Name("lucide".into()))),
+                        RichText::new(icon_str(Icon::SquareSplitHorizontal))
+                            .font(FontId::new(50.0, FontFamily::Name("lucide".into()))),
                     );
                     ui.add_space(8.0);
                     ui.label(RichText::new("IDIFFER").size(13.0).color(TEXT).strong());
@@ -343,14 +376,16 @@ impl eframe::App for ImageDifferApp {
 
                     // Slots
                     self.render_slot_header(ui, true, "Original", ctx);
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(icon_str(Icon::ArrowLeftRight))
-                            .size(14.0)
-                            .color(TEXT_DIM)
-                            .font(FontId::new(14.0, FontFamily::Name("lucide".into()))),
-                    );
-                    ui.add_space(8.0);
+                    if has_both {
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(icon_str(Icon::ArrowLeftRight))
+                                .size(14.0)
+                                .color(TEXT_DIM)
+                                .font(FontId::new(14.0, FontFamily::Name("lucide".into()))),
+                        );
+                        ui.add_space(8.0);
+                    }
                     self.render_slot_header(ui, false, "New", ctx);
 
                     // Right side actions
@@ -467,6 +502,15 @@ impl eframe::App for ImageDifferApp {
         }
 
         // ── Central Panel ─────────────────────────────────────────────────────
+        if has_both || has_one {
+            ctx.input(|i| {
+                if i.pointer.button_down(egui::PointerButton::Secondary)
+                    || i.pointer.button_down(egui::PointerButton::Middle)
+                {
+                    self.pan_offset += i.pointer.delta();
+                }
+            });
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(BG_DEEP))
             .show(ctx, |ui| {
@@ -484,33 +528,37 @@ impl eframe::App for ImageDifferApp {
                             let (rect, resp) = ui.allocate_exact_size(avail, egui::Sense::drag());
                             let p = ui.painter();
 
-                            // Left image full
+                            let img_rect = calc_image_rect(
+                                tex_left.size_vec2(),
+                                rect,
+                                self.zoom_level,
+                                self.pan_offset,
+                            );
                             p.image(
                                 tex_left.id(),
-                                rect,
+                                img_rect,
                                 egui::Rect::from_min_max(
                                     egui::pos2(0.0, 0.0),
                                     egui::pos2(1.0, 1.0),
                                 ),
                                 Color32::WHITE,
                             );
-
-                            // Right image clipped
                             let sx = rect.left() + rect.width() * self.slider_pos;
-                            let clip = egui::Rect::from_min_max(
-                                egui::pos2(sx, rect.top()),
-                                egui::pos2(rect.right(), rect.bottom()),
-                            );
-                            ui.painter_at(clip).image(
-                                tex_right.id(),
-                                rect,
-                                egui::Rect::from_min_max(
-                                    egui::pos2(0.0, 0.0),
-                                    egui::pos2(1.0, 1.0),
-                                ),
-                                Color32::WHITE,
-                            );
-
+                            let clip = img_rect.intersect(egui::Rect::from_min_max(
+                                egui::pos2(sx, f32::MIN),
+                                egui::pos2(f32::MAX, f32::MAX),
+                            ));
+                            if clip.is_positive() {
+                                ui.painter_at(clip).image(
+                                    tex_right.id(),
+                                    img_rect,
+                                    egui::Rect::from_min_max(
+                                        egui::pos2(0.0, 0.0),
+                                        egui::pos2(1.0, 1.0),
+                                    ),
+                                    Color32::WHITE,
+                                );
+                            }
                             let p = ui.painter();
 
                             // Corner labels
@@ -611,8 +659,18 @@ impl eframe::App for ImageDifferApp {
                             let (_, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
                             let p = ui.painter();
 
-                            let disp_l = fit_in_rect(tex_left.size_vec2(), left_rect);
-                            let disp_r = fit_in_rect(tex_right.size_vec2(), right_rect);
+                            let disp_l = calc_image_rect(
+                                tex_left.size_vec2(),
+                                left_rect,
+                                self.zoom_level,
+                                self.pan_offset,
+                            );
+                            let disp_r = calc_image_rect(
+                                tex_right.size_vec2(),
+                                right_rect,
+                                self.zoom_level,
+                                self.pan_offset,
+                            );
 
                             // Checkerboard bg (simple solid for now)
                             p.rect_filled(left_rect, 0.0, BG_DEEP);
@@ -686,7 +744,12 @@ impl eframe::App for ImageDifferApp {
 
                             if let Some(ref tex_diff) = self.texture_diff {
                                 let container = egui::Rect::from_min_size(pos, avail);
-                                let disp = fit_in_rect(tex_diff.size_vec2(), container);
+                                let disp = calc_image_rect(
+                                    tex_diff.size_vec2(),
+                                    container,
+                                    self.zoom_level,
+                                    self.pan_offset,
+                                );
                                 p.image(
                                     tex_diff.id(),
                                     disp,
@@ -713,7 +776,12 @@ impl eframe::App for ImageDifferApp {
                             let container = egui::Rect::from_min_size(pos, avail);
                             let (_, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
                             let p = ui.painter();
-                            let disp = fit_in_rect(tex_left.size_vec2(), container);
+                            let disp = calc_image_rect(
+                                tex_left.size_vec2(),
+                                container,
+                                self.zoom_level,
+                                self.pan_offset,
+                            );
                             p.image(
                                 tex_left.id(),
                                 disp,
@@ -941,7 +1009,7 @@ impl eframe::App for ImageDifferApp {
                     ui.centered_and_justified(|ui| {
                         ui.vertical_centered(|ui| {
                             ui.add_space(32.0);
-                            ui.label(icon_text(Icon::Layers, 48.0).color(ACCENT));
+                            ui.label(icon_text(Icon::ImagePlay, 48.0));
                             ui.add_space(20.0);
                             ui.label(
                                 RichText::new("Drop images to compare")

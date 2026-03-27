@@ -93,3 +93,16 @@ pub fn fit_in_rect(img_size: egui::Vec2, container: egui::Rect) -> egui::Rect {
     let sz = img_size * scale;
     egui::Rect::from_center_size(container.center(), sz)
 }
+
+pub fn calc_image_rect(
+    img_size: egui::Vec2,
+    container: egui::Rect,
+    zoom: f32,
+    pan: egui::Vec2,
+) -> egui::Rect {
+    if zoom <= 0.0 {
+        fit_in_rect(img_size, container)
+    } else {
+        egui::Rect::from_center_size(container.center() + pan, img_size * zoom)
+    }
+}
