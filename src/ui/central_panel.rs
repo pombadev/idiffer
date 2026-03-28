@@ -535,24 +535,20 @@ pub fn render_central_panel(app: &mut ImageDifferApp, ui: &mut egui::Ui, ctx: &e
                                     .min_size(egui::vec2(140.0, 32.0));
 
                                     if ui.add(browse_btn).clicked() {
-                                        match crate::utils::pick_image_files() {
-                                            Some(paths) if paths.len() == 2 => {
-                                                let a = &paths[0];
-                                                let b = &paths[1];
+                                        if let Some(paths) = crate::utils::pick_image_files() {
+                                            if let Some(path) = paths.iter().next() {
                                                 app.load_image_to_texture(
                                                     ctx,
-                                                    a.to_path_buf(),
+                                                    path.to_path_buf(),
                                                     true,
                                                 );
+                                            }
+
+                                            if let Some(path) = paths.iter().next() {
                                                 app.load_image_to_texture(
                                                     ctx,
-                                                    b.to_path_buf(),
+                                                    path.to_path_buf(),
                                                     false,
-                                                );
-                                            }
-                                            _ => {
-                                                app.error_msg = Some(
-                                                    "Please select exactly two images.".to_string(),
                                                 );
                                             }
                                         };
