@@ -1,6 +1,12 @@
 [package]
 name = "idiffer"
 version = "0.1.0"
+description = "Image comparison tool with Git history support and precision diff analysis."
+license = "Apache-2.0"
+repository = "https://github.com/pombadev/idiffer"
+readme = "README.md"
+keywords = ["image", "diff", "git", "gui", "egui"]
+categories = ["graphics", "development-tools"]
 edition = "2024"
 
 [dependencies]
