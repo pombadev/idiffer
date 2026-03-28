@@ -5,15 +5,15 @@ Built with Rust and the egui framework
 
 ## Features
 
+- **Comparison Modes**:
+  - Slider Mode ![Slider](assets/slider.png)
+  - Side-by-Side ![Side-by-Side](assets/side-by-side.png)
+
 - **Precision Diffing**:
-  - Difference
+  - Difference Mode ![Difference](assets/difference.png)
   - Fade modes
 
 - **Git Integration**: Directly browse and compare file versions from your Git history
-
-- **Dynamic Comparison Modes**:
-  - Slider
-  - Side-by-Side
 
 - **Cross-Platform**: Designed for Linux (Wayland/X11), macOS, and Windows
 
