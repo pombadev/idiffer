@@ -71,15 +71,7 @@ impl ImageDifferApp {
                             self.path_right.clone()
                         };
                         if let Some(path) = path_clone {
-                            let hist_btn = egui::Button::new(
-                                RichText::new(icon_str(Icon::GitBranch))
-                                    .size(12.0)
-                                    .color(TEXT_MUTED),
-                            )
-                            .fill(Color32::TRANSPARENT)
-                            .stroke(Stroke::NONE);
-                            let _hist_resp = ui.add(hist_btn).on_hover_text("Git history");
-                            ui.menu_button(RichText::new("").size(0.0), |ui| {
+                            ui.menu_button(RichText::new(icon_str(Icon::GitBranch)), |ui| {
                                 let commits = if is_left {
                                     if self.commits_left.is_empty() {
                                         self.commits_left = self.get_git_history(&path);
@@ -99,7 +91,7 @@ impl ImageDifferApp {
                                     );
                                 } else {
                                     egui::ScrollArea::vertical()
-                                        .max_height(300.0)
+                                        .max_height(250.0)
                                         .show(ui, |ui| {
                                             ui.set_min_width(360.0);
                                             for commit in &commits {
@@ -111,40 +103,64 @@ impl ImageDifferApp {
                                                             .color(ACCENT),
                                                     );
                                                     ui.add_space(4.0);
+                                                    // Calculate a truncated message
                                                     let msg = if commit.message.len() > 36 {
                                                         format!("{}…", &commit.message[..34])
                                                     } else {
                                                         commit.message.clone()
                                                     };
-                                                    if ui
-                                                        .selectable_label(
-                                                            false,
-                                                            RichText::new(msg)
-                                                                .size(12.0)
-                                                                .color(TEXT),
-                                                        )
-                                                        .clicked()
-                                                    {
-                                                        self.load_from_git(
-                                                            ctx,
-                                                            &path,
-                                                            &commit.hash,
-                                                            is_left,
+
+                                                    // Use horizontal layout but ensure date is on the right
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            RichText::new(&commit.hash)
+                                                                .monospace()
+                                                                .size(11.0)
+                                                                .color(ACCENT),
                                                         );
-                                                        ui.close();
-                                                    }
-                                                    ui.with_layout(
-                                                        egui::Layout::right_to_left(
-                                                            egui::Align::Center,
-                                                        ),
-                                                        |ui| {
-                                                            ui.label(
-                                                                RichText::new(&commit.date)
-                                                                    .size(10.0)
-                                                                    .color(TEXT_MUTED),
-                                                            );
-                                                        },
-                                                    );
+                                                        ui.add_space(4.0);
+
+                                                        // Give the text label flexible horizontal space by putting the date aligned right!
+                                                        ui.with_layout(
+                                                            egui::Layout::right_to_left(
+                                                                egui::Align::Center,
+                                                            ),
+                                                            |ui| {
+                                                                // Print the date on the far right
+                                                                ui.label(
+                                                                    RichText::new(&commit.date)
+                                                                        .size(10.0)
+                                                                        .color(TEXT_MUTED),
+                                                                );
+
+                                                                // The commit message takes up the rest of the available middle space
+                                                                ui.with_layout(
+                                                                    egui::Layout::left_to_right(
+                                                                        egui::Align::Center,
+                                                                    ),
+                                                                    |ui| {
+                                                                        if ui
+                                                                            .selectable_label(
+                                                                                false,
+                                                                                RichText::new(msg)
+                                                                                    .size(12.0)
+                                                                                    .color(TEXT),
+                                                                            )
+                                                                            .clicked()
+                                                                        {
+                                                                            self.load_from_git(
+                                                                                ctx,
+                                                                                &path,
+                                                                                &commit.hash,
+                                                                                is_left,
+                                                                            );
+                                                                            ui.close();
+                                                                        }
+                                                                    },
+                                                                );
+                                                            },
+                                                        );
+                                                    });
                                                 });
                                             }
                                         });
@@ -160,6 +176,7 @@ impl ImageDifferApp {
                         )
                         .fill(Color32::TRANSPARENT)
                         .stroke(Stroke::NONE);
+
                         if ui.add(del_btn).on_hover_text("Remove").clicked() {
                             if is_left {
                                 self.texture_left = None;
@@ -181,14 +198,15 @@ impl ImageDifferApp {
     }
 }
 impl eframe::App for ImageDifferApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         // ── Load pending images (deferred from startup args) ──────────────────
         if self.pending_left.is_some() || self.pending_right.is_some() {
             if let Some(p) = self.pending_left.take() {
-                self.load_image_to_texture(ctx, p, true);
+                self.load_image_to_texture(&ctx, p, true);
             }
             if let Some(p) = self.pending_right.take() {
-                self.load_image_to_texture(ctx, p, false);
+                self.load_image_to_texture(&ctx, p, false);
             }
         }
 
@@ -201,25 +219,25 @@ impl eframe::App for ImageDifferApp {
                 let mut iter = i.raw.dropped_files.clone().into_iter();
                 if let Some(f) = iter.next() {
                     if let Some(p) = f.path {
-                        self.load_image_to_texture(ctx, p, true);
+                        self.load_image_to_texture(&ctx, p, true);
                     }
                 }
                 if let Some(f) = iter.next() {
                     if let Some(p) = f.path {
-                        self.load_image_to_texture(ctx, p, false);
+                        self.load_image_to_texture(&ctx, p, false);
                     }
                 }
             }
         });
 
         // ── Footer ───────────────────────────────────────────────────────────
-        egui::TopBottomPanel::bottom("footer")
+        egui::Panel::bottom("footer")
             .frame(
                 egui::Frame::NONE
                     .fill(BG_DEEP)
                     .stroke(Stroke::new(1.0, BORDER)),
             )
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 ui.set_height(24.0);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add_space(12.0);
@@ -291,14 +309,14 @@ impl eframe::App for ImageDifferApp {
             });
 
         // ── Header ───────────────────────────────────────────────────────────
-        egui::TopBottomPanel::top("header")
-            .exact_height(52.0)
+        egui::Panel::top("header")
+            .exact_size(52.0)
             .frame(
                 egui::Frame::NONE
                     .fill(BG_SURFACE)
                     .stroke(Stroke::new(1.0, BORDER)),
             )
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.add_space(16.0);
 
@@ -375,7 +393,7 @@ impl eframe::App for ImageDifferApp {
                     }
 
                     // Slots
-                    self.render_slot_header(ui, true, "Original", ctx);
+                    self.render_slot_header(ui, true, "Original", &ctx);
                     if has_both {
                         ui.add_space(8.0);
                         ui.label(
@@ -386,7 +404,7 @@ impl eframe::App for ImageDifferApp {
                         );
                         ui.add_space(8.0);
                     }
-                    self.render_slot_header(ui, false, "New", ctx);
+                    self.render_slot_header(ui, false, "New", &ctx);
 
                     // Right side actions
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -421,14 +439,14 @@ impl eframe::App for ImageDifferApp {
 
         // ── Mode Toolbar (only when both images loaded) ───────────────────────
         if has_both {
-            egui::TopBottomPanel::top("mode_toolbar")
-                .exact_height(40.0)
+            egui::Panel::top("mode_toolbar")
+                .exact_size(40.0)
                 .frame(
                     egui::Frame::NONE
                         .fill(BG_DEEP)
                         .stroke(Stroke::new(1.0, BORDER)),
                 )
-                .show(ctx, |ui| {
+                .show_inside(ui, |ui| {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.add_space(16.0);
 
@@ -513,7 +531,7 @@ impl eframe::App for ImageDifferApp {
         }
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(BG_DEEP))
-            .show(ctx, |ui| {
+            .show_inside(ui, |ui| {
                 if has_both {
                     // Clone handles up front to avoid borrow conflicts
                     let (Some(tex_left), Some(tex_right)) =
@@ -736,7 +754,7 @@ impl eframe::App for ImageDifferApp {
                         }
 
                         DiffMode::Difference => {
-                            self.generate_diff_texture(ctx);
+                            self.generate_diff_texture(&ctx);
                             let avail = ui.available_size();
                             let pos = ui.cursor().min;
                             let (_, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
@@ -926,7 +944,7 @@ impl eframe::App for ImageDifferApp {
                                                             let is_left_empty =
                                                                 self.texture_left.is_none();
                                                             self.load_from_git(
-                                                                ctx,
+                                                                &ctx,
                                                                 &path,
                                                                 &commit.hash,
                                                                 is_left_empty,
@@ -953,7 +971,7 @@ impl eframe::App for ImageDifferApp {
                                 if ui.add(local_btn).clicked() {
                                     if let Some(p) = crate::utils::pick_image_file() {
                                         let is_left_empty = self.texture_left.is_none();
-                                        self.load_image_to_texture(ctx, p, is_left_empty);
+                                        self.load_image_to_texture(&ctx, p, is_left_empty);
                                     }
                                 }
                             });
@@ -997,7 +1015,7 @@ impl eframe::App for ImageDifferApp {
                                 if ui.add(btn).clicked() {
                                     if let Some(p) = crate::utils::pick_image_file() {
                                         let is_left_empty = !l;
-                                        self.load_image_to_texture(ctx, p, is_left_empty);
+                                        self.load_image_to_texture(&ctx, p, is_left_empty);
                                     }
                                 }
                             });
@@ -1059,16 +1077,30 @@ impl eframe::App for ImageDifferApp {
                                         .stroke(Stroke::new(1.0, BORDER))
                                         .corner_radius(egui::CornerRadius::same(6u8))
                                         .min_size(egui::vec2(140.0, 32.0));
+
                                         if ui.add(browse_btn).clicked() {
-                                            if let Some(paths) = crate::utils::pick_image_files() {
-                                                let mut iter = paths.into_iter();
-                                                if let Some(p) = iter.next() {
-                                                    self.load_image_to_texture(ctx, p, true);
+                                            match crate::utils::pick_image_files() {
+                                                Some(paths) if paths.len() == 2 => {
+                                                    let a = &paths[0];
+                                                    let b = &paths[1];
+                                                    self.load_image_to_texture(
+                                                        &ctx,
+                                                        a.to_path_buf(),
+                                                        true,
+                                                    );
+                                                    self.load_image_to_texture(
+                                                        &ctx,
+                                                        b.to_path_buf(),
+                                                        false,
+                                                    );
                                                 }
-                                                if let Some(p) = iter.next() {
-                                                    self.load_image_to_texture(ctx, p, false);
+                                                _ => {
+                                                    self.error_msg = Some(
+                                                        "Please select exactly two images."
+                                                            .to_string(),
+                                                    );
                                                 }
-                                            }
+                                            };
                                         }
                                     });
                                 });

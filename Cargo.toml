@@ -4,13 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# GUI Framework
-eframe = "0.33"       # Or the latest version
+eframe = "0.34"
 egui-shadcn = "0.5.0"
-
-# Image Processing
-image = "0.24"           # Essential for loading images
+image = "0.25"
 lucide-icons = "0.575.0"
-
-# Native File Dialogs (Linux/macOS support)
-rfd = "0.14" # Makes loading files easy
+rfd = "0.17"

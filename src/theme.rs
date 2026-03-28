@@ -70,12 +70,12 @@ pub fn setup_visuals(ctx: &egui::Context) {
 
     ctx.set_visuals(v);
 
-    let mut style = (*ctx.style()).clone();
+    let mut style: egui::Style = (*ctx.global_style()).clone();
     style.spacing.item_spacing = egui::vec2(6.0, 4.0);
     style.spacing.button_padding = egui::vec2(10.0, 5.0);
     style.spacing.window_margin = egui::Margin::same(0);
     style.spacing.menu_margin = egui::Margin::same(6);
-    ctx.set_style(style);
+    ctx.set_global_style(style);
 }
 
 pub fn icon_text(icon: Icon, size: f32) -> RichText {
