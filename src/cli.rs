@@ -147,17 +147,41 @@ pub fn parse_args() -> StartupConfig {
         }
     }
 
-    // Two path args → difftool mode ($LOCAL $REMOTE)
-    let paths: Vec<PathBuf> = args
+    // Filter out empty arguments (can happen if $LOCAL/$REMOTE are empty strings in git config)
+    let non_empty_args: Vec<String> = args.iter().filter(|a| !a.is_empty()).cloned().collect();
+
+    // Handle Git External Diff format (7 arguments)
+    // path old-file old-hex old-mode new-file new-hex new-mode
+    if non_empty_args.len() == 7 {
+        let filename = non_empty_args[0].clone();
+        let old_file = non_empty_args[1].clone();
+        let new_file = non_empty_args[4].clone();
+        let old_rev = non_empty_args[2].chars().take(7).collect();
+        let new_rev = non_empty_args[5].chars().take(7).collect();
+
+        return StartupConfig {
+            left_path: Some(PathBuf::from(old_file)),
+            right_path: Some(PathBuf::from(new_file)),
+            initial_mode: DiffMode::Slider,
+            git_context: Some(GitContext {
+                filename: Path::new(&filename)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or(filename),
+                old_rev,
+                new_rev,
+            }),
+        };
+    }
+
+    // Traditional two path args → difftool mode ($LOCAL $REMOTE)
+    let paths: Vec<PathBuf> = non_empty_args
         .iter()
         .filter(|a| !a.starts_with('-'))
         .map(|a| PathBuf::from(a))
         .collect();
 
     if paths.len() >= 2 {
-        // Try to detect git context from environment variables git sets for difftool
-        let _old_rev = std::env::var("LOCAL").unwrap_or_default();
-        let _new_rev = std::env::var("REMOTE").unwrap_or_default();
         let filename = paths[1]
             .file_name()
             .map(|n| n.to_string_lossy().to_string())

@@ -5,15 +5,12 @@ mod cli;
 mod theme;
 mod types;
 mod ui;
-mod utils;
 
 use app::ImageDifferApp;
-use cli::parse_args;
 use eframe::egui;
-use theme::{setup_fonts, setup_visuals};
 
 fn main() -> eframe::Result<()> {
-    let cfg = parse_args();
+    let cfg = cli::parse_args();
     eframe::run_native(
         "IDiffer",
         eframe::NativeOptions {
@@ -23,8 +20,8 @@ fn main() -> eframe::Result<()> {
             ..Default::default()
         },
         Box::new(|cc| {
-            setup_fonts(&cc.egui_ctx);
-            setup_visuals(&cc.egui_ctx);
+            theme::setup_fonts(&cc.egui_ctx);
+            theme::setup_visuals(&cc.egui_ctx);
             Ok(Box::new(ImageDifferApp::new(cc, cfg)))
         }),
     )

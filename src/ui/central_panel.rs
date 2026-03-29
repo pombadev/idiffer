@@ -431,7 +431,14 @@ pub fn render_central_panel(app: &mut ImageDifferApp, ui: &mut egui::Ui, ctx: &e
                             .stroke(Stroke::new(1.0, BORDER))
                             .corner_radius(egui::CornerRadius::same(6u8));
                             if ui.add(local_btn).clicked() {
-                                if let Some(p) = crate::utils::pick_image_file() {
+                                if let Some(p) = rfd::FileDialog::new()
+                                    .set_directory(".")
+                                    .add_filter(
+                                        "Images",
+                                        &["png", "jpg", "jpeg", "webp", "bmp", "gif"],
+                                    )
+                                    .pick_file()
+                                {
                                     let is_left_empty = app.texture_left.is_none();
                                     app.load_image_to_texture(ctx, p, is_left_empty);
                                 }
@@ -471,7 +478,14 @@ pub fn render_central_panel(app: &mut ImageDifferApp, ui: &mut egui::Ui, ctx: &e
                             .corner_radius(egui::CornerRadius::same(8u8))
                             .min_size(egui::vec2(180.0, 44.0));
                             if ui.add(btn).clicked() {
-                                if let Some(p) = crate::utils::pick_image_file() {
+                                if let Some(p) = rfd::FileDialog::new()
+                                    .set_directory(".")
+                                    .add_filter(
+                                        "Images",
+                                        &["png", "jpg", "jpeg", "webp", "bmp", "gif"],
+                                    )
+                                    .pick_file()
+                                {
                                     let is_left_empty = !l;
                                     app.load_image_to_texture(ctx, p, is_left_empty);
                                 }
@@ -535,7 +549,14 @@ pub fn render_central_panel(app: &mut ImageDifferApp, ui: &mut egui::Ui, ctx: &e
                                     .min_size(egui::vec2(140.0, 32.0));
 
                                     if ui.add(browse_btn).clicked() {
-                                        if let Some(paths) = crate::utils::pick_image_files() {
+                                        if let Some(paths) = rfd::FileDialog::new()
+                                            .set_directory(std::env::current_dir().unwrap())
+                                            .add_filter(
+                                                "Images",
+                                                &["png", "jpg", "jpeg", "webp", "bmp", "gif"],
+                                            )
+                                            .pick_files()
+                                        {
                                             if let Some(path) = paths.iter().next() {
                                                 app.load_image_to_texture(
                                                     ctx,
